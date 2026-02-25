@@ -1,6 +1,7 @@
 .cache/
 .claude/
 .pio/
+.venv/
 .vscode/
 build*
 managed_components/

@@ -180,10 +180,10 @@ static void tas57xx_set_volume(float volume_airplay_db) {
   }
 
   // Volume mapping (2:1 scaling):
-  // AirPlay 0 dB    -> DAC CONFIG_DAC_MAX_VOLUME
+  // AirPlay 0 dB    -> DAC CONFIG_TAS57XX_MAX_VOLUME
   // AirPlay -25 dB  -> DAC (MAX - 50)
   // AirPlay -30..-25 dB -> DAC mute(-127)..(MAX-50) (steep roll-off)
-  float max_db = (float)CONFIG_DAC_MAX_VOLUME;
+  float max_db = (float)CONFIG_TAS57XX_MAX_VOLUME;
   float db_level;
   if (volume_airplay_db >= -25.0f) {
     // 2:1 linear scaling: 25 dB AirPlay range -> 50 dB DAC range

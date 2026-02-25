@@ -48,6 +48,6 @@ direct_dependencies:
 - espressif/led_strip
 - espressif/libsodium
 - espressif/mdns
-manifest_hash: bbc1c7d8d90e3a4e238501514df6cf8f181ad64bbcf43092a639787432112764
+manifest_hash: 3733e6904685126a0a0f5c544c32bf5b37baab5418ce5c1609ffa1bfb47bbb80
 target: esp32
 version: 2.0.0
