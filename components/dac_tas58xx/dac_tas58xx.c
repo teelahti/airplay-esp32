@@ -17,66 +17,66 @@
 #include "freertos/task.h"
 
 /* ---------- TAS5825M I2C addresses (7-bit) ---------- */
-#define TAS5825M_ADDR_GND   0x4C  // ADR pin = 0 Ω to GND
-#define TAS5825M_ADDR_1K    0x4D  // ADR pin = 1 kΩ to GND
-#define TAS5825M_ADDR_4K7   0x4E  // ADR pin = 4.7 kΩ to GND
-#define TAS5825M_ADDR_15K   0x4F  // ADR pin = 15 kΩ to GND
+#define TAS5825M_ADDR_GND 0x4C // ADR pin = 0 Ω to GND
+#define TAS5825M_ADDR_1K  0x4D // ADR pin = 1 kΩ to GND
+#define TAS5825M_ADDR_4K7 0x4E // ADR pin = 4.7 kΩ to GND
+#define TAS5825M_ADDR_15K 0x4F // ADR pin = 15 kΩ to GND
 
 /* ---------- Register addresses (Book 0, Page 0) ---------- */
-#define REG_PAGE_SEL         0x00
-#define REG_BOOK_SEL         0x7F
+#define REG_PAGE_SEL 0x00
+#define REG_BOOK_SEL 0x7F
 
-#define REG_RESET_CTRL       0x01
-#define REG_DEVICE_CTRL1     0x02
-#define REG_DEVICE_CTRL2     0x03
+#define REG_RESET_CTRL   0x01
+#define REG_DEVICE_CTRL1 0x02
+#define REG_DEVICE_CTRL2 0x03
 
-#define REG_SIG_CH_CTRL      0x28
-#define REG_CLOCK_DET_CTRL   0x29
+#define REG_SIG_CH_CTRL    0x28
+#define REG_CLOCK_DET_CTRL 0x29
 
-#define REG_SAP_CTRL1        0x33  // I2S format + word length
-#define REG_SAP_CTRL2        0x34  // Data offset
-#define REG_SAP_CTRL3        0x35  // L/R channel routing
+#define REG_SAP_CTRL1 0x33 // I2S format + word length
+#define REG_SAP_CTRL2 0x34 // Data offset
+#define REG_SAP_CTRL3 0x35 // L/R channel routing
 
-#define REG_DSP_PGM_MODE     0x40
-#define REG_DSP_CTRL         0x46
+#define REG_DSP_PGM_MODE 0x40
+#define REG_DSP_CTRL     0x46
 
-#define REG_DIG_VOL          0x4C  // Digital volume (both channels)
-#define REG_DIG_VOL_CTRL1    0x4E  // Volume ramp control
-#define REG_AUTO_MUTE_CTRL   0x50
-#define REG_AUTO_MUTE_TIME   0x51
-#define REG_ANA_CTRL         0x53
-#define REG_AGAIN            0x54  // Analog gain
+#define REG_DIG_VOL        0x4C // Digital volume (both channels)
+#define REG_DIG_VOL_CTRL1  0x4E // Volume ramp control
+#define REG_AUTO_MUTE_CTRL 0x50
+#define REG_AUTO_MUTE_TIME 0x51
+#define REG_ANA_CTRL       0x53
+#define REG_AGAIN          0x54 // Analog gain
 
-#define REG_DIE_ID           0x67  // Expected: 0x95
-#define REG_POWER_STATE      0x68
+#define REG_DIE_ID      0x67 // Expected: 0x95
+#define REG_POWER_STATE 0x68
 
-#define REG_CHAN_FAULT        0x70
-#define REG_GLOBAL_FAULT1    0x71
-#define REG_GLOBAL_FAULT2    0x72
-#define REG_WARNING           0x73
-#define REG_FAULT_CLEAR      0x78
+#define REG_CHAN_FAULT    0x70
+#define REG_GLOBAL_FAULT1 0x71
+#define REG_GLOBAL_FAULT2 0x72
+#define REG_WARNING       0x73
+#define REG_FAULT_CLEAR   0x78
 
 /* ---------- DEVICE_CTRL2 (0x03) bit fields ---------- */
-#define CTRL2_MUTE           (1 << 3)
-#define CTRL2_DIS_DSP        (1 << 4)
-#define CTRL2_STATE_MASK     0x03
-#define CTRL2_DEEP_SLEEP     0x00
-#define CTRL2_SLEEP          0x01
-#define CTRL2_HIZ            0x02
-#define CTRL2_PLAY           0x03
+#define CTRL2_MUTE       (1 << 3)
+#define CTRL2_DIS_DSP    (1 << 4)
+#define CTRL2_STATE_MASK 0x03
+#define CTRL2_DEEP_SLEEP 0x00
+#define CTRL2_SLEEP      0x01
+#define CTRL2_HIZ        0x02
+#define CTRL2_PLAY       0x03
 
 /* ---------- DIG_VOL (0x4C) ---------- */
 // 0x00 = +24.0 dB, 0x30 = 0.0 dB, 0xFE = -103.0 dB, 0xFF = mute
 // step = -0.5 dB per increment
-#define DIG_VOL_0DB          0x30
-#define DIG_VOL_MUTE         0xFF
+#define DIG_VOL_0DB  0x30
+#define DIG_VOL_MUTE 0xFF
 
 /* ---------- AGAIN (0x54) ---------- */
 // bits[4:0]: 0x00 = 0 dB, each step = -0.5 dB, max 0x1F = -15.5 dB
 
 /* ---------- RESET_CTRL (0x01) ---------- */
-#define RESET_DIG_CORE       (1 << 4)
-#define RESET_REG            (1 << 0)
+#define RESET_DIG_CORE (1 << 4)
+#define RESET_REG      (1 << 0)
 
 /* ---------- Constants ---------- */
 #define I2C_TIMEOUT    100    // ms
@@ -353,8 +353,7 @@ static esp_err_t tas58xx_init(void) {
   // Run init sequence
   ESP_LOGI(TAG, "Running init sequence...");
   for (int i = 0; tas58xx_init_seq[i].reg != 0xFF; i++) {
-    err = tas58xx_write_reg(tas58xx_init_seq[i].reg,
-                            tas58xx_init_seq[i].value);
+    err = tas58xx_write_reg(tas58xx_init_seq[i].reg, tas58xx_init_seq[i].value);
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "Init failed at step %d: reg 0x%02X val 0x%02X: %s", i,
                tas58xx_init_seq[i].reg, tas58xx_init_seq[i].value,
@@ -494,9 +493,9 @@ static void tas58xx_enable_speaker(bool enable) {
            enable ? "ENABLE" : "DISABLE", val);
 
   if (enable) {
-    val &= ~CTRL2_MUTE;  // Clear mute bit
+    val &= ~CTRL2_MUTE; // Clear mute bit
   } else {
-    val |= CTRL2_MUTE;   // Set mute bit
+    val |= CTRL2_MUTE; // Set mute bit
   }
 
   tas58xx_write_reg(REG_DEVICE_CTRL2, val);
@@ -555,8 +554,10 @@ static void tas58xx_set_volume(float volume_airplay_db) {
     reg_val = DIG_VOL_MUTE;
   } else {
     int raw = DIG_VOL_0DB - (int)(db_level * 2.0f);
-    if (raw < 0x00) raw = 0x00;
-    if (raw > 0xFE) raw = 0xFE;
+    if (raw < 0x00)
+      raw = 0x00;
+    if (raw > 0xFE)
+      raw = 0xFE;
     reg_val = (uint8_t)raw;
   }
 
@@ -1076,8 +1077,7 @@ static esp_err_t i2c_bus_write(i2c_master_dev_handle_t dev, uint8_t addr,
   free(buf);
 
   if (ret != ESP_OK) {
-    ESP_LOGD(TAG, "I2C write reg 0x%02X failed: %s", reg,
-             esp_err_to_name(ret));
+    ESP_LOGD(TAG, "I2C write reg 0x%02X failed: %s", reg, esp_err_to_name(ret));
   }
   return ret;
 }
