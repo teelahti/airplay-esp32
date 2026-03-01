@@ -17,7 +17,7 @@
 
 ## What is this?
 
-This turns a cheap ESP32-S3 board into a wireless AirPlay 2 speaker. Plug it into any amplifier or powered speakers, and it shows up on your iPhone/iPad/Mac just like a HomePod or AirPlay TV. Also supports the **[SqueezeAMP](https://github.com/philippe44/SqueezeAMP)** board (ESP32 + TAS5756 DAC with built-in amplifier).
+This turns a cheap ESP32-S3 board into a wireless AirPlay 2 speaker. Plug it into any amplifier or powered speakers, and it shows up on your iPhone/iPad/Mac just like a HomePod or AirPlay TV. Also supports the **[SqueezeAMP](https://github.com/philippe44/SqueezeAMP)** (ESP32 + TAS5756 DAC) and **[Esparagus Audio Brick](https://esparagus.com/)** (ESP32 + TAS5825M DAC/amp) boards with built-in amplifiers.
 
 **No cloud. No app. Just tap and play.**
 
@@ -35,7 +35,7 @@ You only need 2 boards and a few wires. Everything is available on AliExpress / 
 
 > **Important:** The ESP32-S3 must have **8MB PSRAM** (the N16R8 variant). Boards without enough PSRAM will not work — the audio decoding needs the extra memory.
 
-> **Alternative:** If you have a **[SqueezeAMP](https://github.com/philippe44/SqueezeAMP)** board (ESP32 with TAS5756 DAC and built-in amplifier), you don't need a separate DAC — just flash the SqueezeAMP firmware target. See the [SqueezeAMP section](#squeezeamp) below.
+> **Alternative:** If you have a **[SqueezeAMP](https://github.com/philippe44/SqueezeAMP)** or **[Esparagus Audio Brick](https://esparagus.com/)** board, you don't need a separate DAC — just flash the appropriate firmware target. See the [SqueezeAMP](#squeezeamp) and [Esparagus Audio Brick](#esparagus-audio-brick) sections below.
 
 Here is what the PCM5102A board looks like:
 Verify the solder bridges are in the same position as the picture.
@@ -190,6 +190,47 @@ A 4MB flash variant is also supported (`squeezeamp-4m` PlatformIO environment).
 
 ---
 
+## Esparagus Audio Brick
+
+The **[Esparagus Audio Brick](https://github.com/sonocotta/esparagus-media-center/?tab=readme-ov-file#esparagus-audio-brick-prototype)** is an ESP32-based board with a **TI TAS5825M** Class-D DAC/amplifier. Like the SqueezeAMP, no external DAC is needed — connect speakers directly to the board.
+
+### Features
+
+- TAS5825M with on-chip DSP and 15-band parametric EQ (25 Hz – 16 kHz) (EQ NOT YET IMPLEMENTED IN THIS FIRMWARE)
+- Hardware volume control with configurable max level
+- Speaker fault detection with automatic mute/recovery
+- Automatic power state management (deep sleep / standby / play) based on AirPlay session state
+- 8 MB flash
+
+### Flashing
+
+```bash
+# PlatformIO
+pio run -e esparagus-audio-brick -t upload
+
+# Monitor serial output
+pio run -e esparagus-audio-brick -t monitor
+```
+
+### Default GPIO Assignments
+
+| Function       | GPIO | Notes                              |
+| -------------- | ---- | ---------------------------------- |
+| I2S BCK        | 26   | Bit clock                          |
+| I2S WS         | 25   | Word select (LRCLK)                |
+| I2S DO         | 22   | Serial audio data                  |
+| I2C SDA        | 21   | DAC control (TAS5825M)             |
+| I2C SCL        | 27   | DAC control (TAS5825M)             |
+| Jack detect    | 34   | Headphone jack insertion (input)   |
+| DAC warning    | 36   | TAS5825M warning output (input)    |
+| Speaker fault  | 39   | TAS5825M fault output (input)      |
+
+> GPIOs 34–39 on ESP32 are input-only with no internal pull-up. The board provides external pull-ups on the fault and warning lines.
+
+The build selects the TAS58xx DAC driver automatically (`CONFIG_DAC_TAS58XX`). The driver auto-detects the TAS5825M I2C address (0x4C–0x4F) at startup.
+
+---
+
 ## OLED Display (Optional)
 
 You can connect a small OLED screen to show the currently playing track info — title, artist, album, a progress bar, and playback time. The display auto-scrolls long text and shows a pause indicator when playback is paused.
@@ -266,6 +307,7 @@ SPI mode exposes additional GPIO settings for CLK, MOSI, CS, DC, and RST.
 - **LED indicator** — visual feedback for playback status
 - **OLED display** — optional screen showing track metadata, progress bar, and playback time
 - **SqueezeAMP support** — ESP32 + TAS5756 DAC with built-in amplifier
+- **Esparagus Audio Brick support** — ESP32 + TAS5825M DAC/amp with on-chip DSP and 15-band EQ
 
 ### Limitations
 
@@ -381,11 +423,12 @@ main/
 └── settings.c      # NVS persistence
 components/
 ├── dac/            # Abstract DAC API (dispatch layer)
-├── dac_tas57xx/    # TI TAS57xx DAC driver
+├── dac_tas57xx/    # TI TAS57xx DAC driver (SqueezeAMP)
+├── dac_tas58xx/    # TI TAS58xx DAC driver (Esparagus Audio Brick)
 ├── display/        # OLED display driver (u8g2-based, optional)
 ├── u8g2/           # u8g2 graphics library (git submodule)
 ├── u8g2-hal-esp-idf/ # ESP-IDF HAL for u8g2 (git submodule)
-└── boards/         # Board support (SqueezeAMP, ESP32-S3 generic)
+└── boards/         # Board support (SqueezeAMP, Esparagus Audio Brick, ESP32-S3 generic)
 ```
 
 ---
