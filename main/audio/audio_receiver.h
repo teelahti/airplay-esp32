@@ -114,6 +114,15 @@ bool audio_receiver_has_data(void);
 void audio_receiver_flush(void);
 
 /**
+ * Pause playback while preserving the timing anchor.
+ * Flushes the audio buffer and resets playback-start state, but does NOT
+ * call audio_timing_reset() so the anchor remains valid.  The pause start
+ * time is recorded so that audio_receiver_set_playing(true) can compensate
+ * for the pause duration on resume.
+ */
+void audio_receiver_pause(void);
+
+/**
  * Set advertised/target output latency in microseconds.
  */
 void audio_receiver_set_output_latency_us(uint32_t latency_us);

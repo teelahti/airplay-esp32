@@ -367,6 +367,16 @@ void audio_receiver_flush(void) {
   receiver.blocks_read_in_sequence = 1;
 }
 
+void audio_receiver_pause(void) {
+  // Stop the consumer.  The receiver tasks keep running so the audio buffer
+  // continues to fill with pre-buffered audio — TCP back-pressure naturally
+  // throttles the sender.  On resume the phone sends a fresh
+  // SETRATEANCHORTIME anchor that re-aligns the buffered frames to the
+  // correct wall-clock position; no flush or offset compensation is needed.
+  audio_timing_set_playing(&receiver.timing, false);
+  receiver.blocks_read_in_sequence = 0;
+}
+
 uint16_t audio_receiver_get_buffered_port(void) {
   return receiver.buffered_port;
 }

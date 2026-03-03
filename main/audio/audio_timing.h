@@ -24,9 +24,9 @@ typedef struct {
   size_t pending_frame_len;
   size_t pending_frame_capacity;
   bool pending_valid;
-  // Pause tracking - freeze timing during pause
-  int64_t pause_start_time_ns;     // Local time when paused (0 = not paused)
-  int64_t total_pause_duration_ns; // Accumulated pause time to offset timing
+  // Early-frame guard: counts consecutive early frames to detect a stuck anchor.
+  // Reset whenever a new anchor is set or a late/on-time frame is played.
+  int consecutive_early_frames;
 } audio_timing_t;
 
 void audio_timing_init(audio_timing_t *timing, size_t pending_capacity);

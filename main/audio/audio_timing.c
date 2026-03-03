@@ -12,13 +12,15 @@
 #define HARDWARE_OUTPUT_LATENCY_US    46000   // ~46ms I2S DMA latency
 #define MIN_STARTUP_FRAMES            4
 #define DRIFT_ADJUST_THRESHOLD_FRAMES 2
-#define TIMING_THRESHOLD_US           40000 // 40ms early/late threshold
-#define MAX_EARLY_US                  500000 // 500ms max early - play anyway if older
-#define MAX_CONSECUTIVE_EARLY \
-  50 // Invalidate anchor after this many early frames
+#define TIMING_THRESHOLD_US           40000  // 40ms early/late threshold
+// MAX_CONSECUTIVE_EARLY: number of consecutive early frames before we conclude
+// the anchor is genuinely stuck/wrong.  At ~8 ms per frame this is ~6 seconds
+// of silence, which is well beyond any normal pre-buffer depth.
+#define MAX_CONSECUTIVE_EARLY 750
 
 static const char *TAG = "audio_time";
-static int consecutive_early_frames = 0;
+// consecutive_early_frames is now a field in audio_timing_t so it resets
+// automatically whenever a new anchor is set.
 
 static uint32_t frame_samples_from_format(const audio_format_t *format) {
   if (format->frame_size > 0) {
@@ -93,20 +95,7 @@ static bool compute_early_us(const audio_timing_t *timing,
   target_ns -= (int64_t)HARDWARE_OUTPUT_LATENCY_US * 1000LL;
 
   int64_t now_ns = (int64_t)esp_timer_get_time() * 1000LL;
-
-  // Account for accumulated pause time - shift "now" backwards by pause
-  // duration This effectively makes the buffered frames appear "on time" after
-  // resume
-  int64_t adjusted_now_ns = now_ns - timing->total_pause_duration_ns;
-
-  *early_us = (target_ns - adjusted_now_ns) / 1000LL;
-
-  // Debug: log when pause offset is significant
-  static int log_count = 0;
-  if (timing->total_pause_duration_ns > 0 && (log_count++ % 500 == 0)) {
-    ESP_LOGD(TAG, "Timing: pause_offset=%lld ms, early=%lld ms",
-             timing->total_pause_duration_ns / 1000000LL, *early_us / 1000LL);
-  }
+  *early_us = (target_ns - now_ns) / 1000LL;
 
   return true;
 }
@@ -138,8 +127,7 @@ void audio_timing_reset(audio_timing_t *timing) {
   timing->pending_valid = false;
   timing->pending_frame_len = 0;
   timing->ready_time_us = 0;
-  timing->pause_start_time_ns = 0;
-  timing->total_pause_duration_ns = 0;
+  timing->consecutive_early_frames = 0;
 }
 
 void audio_timing_set_format(audio_timing_t *timing,
@@ -186,10 +174,9 @@ void audio_timing_set_anchor(audio_timing_t *timing,
   timing->anchor_local_time_ns = now_ns;
   timing->ptp_locked = ptp_clock_is_locked();
   timing->anchor_valid = true;
-
-  // Reset pause tracking on new anchor - fresh timing baseline
-  timing->total_pause_duration_ns = 0;
-  timing->pause_start_time_ns = 0;
+  // Reset the early-frame counter so a burst of pre-buffered audio after
+  // a pause/resume does not accumulate into the new anchor's count.
+  timing->consecutive_early_frames = 0;
 }
 
 void audio_timing_set_playing(audio_timing_t *timing, bool playing) {
@@ -197,36 +184,14 @@ void audio_timing_set_playing(audio_timing_t *timing, bool playing) {
     return;
   }
 
-  int64_t now_ns = (int64_t)esp_timer_get_time() * 1000LL;
-
-  ESP_LOGI(TAG, "set_playing: %s -> %s, pause_start=%lld, total_pause=%lld ms",
+  ESP_LOGI(TAG, "set_playing: %s -> %s",
            timing->playing ? "playing" : "paused",
-           playing ? "playing" : "paused", timing->pause_start_time_ns,
-           timing->total_pause_duration_ns / 1000000LL);
-
-  if (!playing && timing->playing) {
-    // Transitioning to paused state - record pause start time
-    timing->pause_start_time_ns = now_ns;
-    ESP_LOGI(TAG, "Playback paused at %lld ns", now_ns);
-  } else if (playing && !timing->playing) {
-    // Transitioning to playing state - accumulate pause duration
-    if (timing->pause_start_time_ns > 0) {
-      int64_t pause_duration = now_ns - timing->pause_start_time_ns;
-      timing->total_pause_duration_ns += pause_duration;
-      ESP_LOGI(
-          TAG,
-          "Playback resumed after %lld ms pause, total pause offset: %lld ms",
-          pause_duration / 1000000LL,
-          timing->total_pause_duration_ns / 1000000LL);
-    } else {
-      ESP_LOGW(TAG, "Resume but pause_start_time_ns was 0!");
-    }
-    timing->pause_start_time_ns = 0;
-  }
+           playing ? "playing" : "paused");
 
   timing->playing = playing;
   if (!playing) {
-    // Keep anchor_valid and buffer intact - just stop consuming
+    // Discard any partially-pending frame so resume starts cleanly from
+    // the oldest frame in the sorted buffer.
     timing->pending_valid = false;
     timing->pending_frame_len = 0;
   }
@@ -340,23 +305,28 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
       if (compute_early_us(timing, format, hdr->rtp_timestamp, sync_mode,
                            &early_us)) {
         if (early_us > TIMING_THRESHOLD_US) {
-          consecutive_early_frames++;
+          timing->consecutive_early_frames++;
 
-          // If frame is way too early or we've had too many early frames,
-          // the anchor is probably wrong - invalidate it and play normally
-          if (early_us > MAX_EARLY_US ||
-              consecutive_early_frames > MAX_CONSECUTIVE_EARLY) {
-            ESP_LOGW(TAG, "Invalidating anchor: early_us=%lld, consecutive=%d",
-                     early_us / 1000LL, consecutive_early_frames);
+          // If we have had an implausibly long run of early frames the anchor
+          // is probably stuck or wrong — give up on it so playback can
+          // continue.  This threshold is high enough (~6 s) that it never
+          // fires during normal pre-buffered-audio scenarios.
+          if (timing->consecutive_early_frames > MAX_CONSECUTIVE_EARLY) {
+            ESP_LOGW(TAG,
+                     "Invalidating stuck anchor: consecutive=%d, early=%lld ms",
+                     timing->consecutive_early_frames, early_us / 1000LL);
             timing->anchor_valid = false;
-            consecutive_early_frames = 0;
+            timing->consecutive_early_frames = 0;
             // Fall through to play the frame normally
           } else {
-            // Frame is slightly early - output silence, keep frame for later
+            // Frame is early — store it as pending and output silence.
+            // The pending frame is re-checked on every subsequent call;
+            // once wall-clock catches up it will be played on time.
+            // This is the normal path for pre-buffered audio after a pause.
             static int early_count = 0;
             early_count++;
             if (early_count % 100 == 1) {
-              ESP_LOGW(TAG,
+              ESP_LOGD(TAG,
                        "Frame too early #%d: %lld ms, buffered=%d, pending=%d",
                        early_count, early_us / 1000LL, buffered_frames,
                        timing->pending_valid ? 1 : 0);
@@ -373,7 +343,7 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
           }
         } else if (early_us < -TIMING_THRESHOLD_US) {
           // Reset consecutive early counter on late/normal frames
-          consecutive_early_frames = 0;
+          timing->consecutive_early_frames = 0;
           // Too late: drop frame
           ESP_LOGW(TAG, "Dropping late frame: %lld ms", -early_us / 1000LL);
           if (stats) {
@@ -391,7 +361,7 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
     }
 
     // Frame is on time - reset early counter
-    consecutive_early_frames = 0;
+    timing->consecutive_early_frames = 0;
 
     // Copy PCM data to output
     memcpy(out, pcm, frame_samples * channels * sizeof(int16_t));

@@ -984,9 +984,18 @@ static void handle_record(int socket, rtsp_conn_t *conn,
   ESP_LOGI(TAG, "RECORD received - starting playback, stream_paused was %d",
            conn->stream_paused);
 
-  audio_receiver_start_stream(conn->data_port, conn->control_port,
-                              conn->buffered_port);
-  audio_receiver_set_playing(true);
+  if (conn->stream_paused) {
+    // Resuming from PAUSE: the stream listener is still running and the
+    // timing anchor has been preserved.  Just re-enable playout; the
+    // pause-duration offset in audio_timing will re-align the timestamps.
+    ESP_LOGI(TAG, "RECORD: resuming from pause, skipping stream restart");
+    audio_receiver_set_playing(true);
+  } else {
+    // Fresh start or post-teardown reconnect: full stream restart.
+    audio_receiver_start_stream(conn->data_port, conn->control_port,
+                                conn->buffered_port);
+    audio_receiver_set_playing(true);
+  }
   conn->stream_paused = false;
   rtsp_events_emit(RTSP_EVENT_PLAYING, NULL);
 
@@ -1268,10 +1277,12 @@ static void handle_pause(int socket, rtsp_conn_t *conn,
   (void)raw;
   (void)raw_len;
 
-  ESP_LOGI(TAG, "PAUSE received - flushing all buffers");
+  ESP_LOGI(TAG, "PAUSE received");
 
-  audio_receiver_flush();
-  audio_receiver_set_playing(false);
+  // Stop the audio consumer but leave the buffer filling.  The phone will
+  // send a fresh SETRATEANCHORTIME (rate=1) anchor on resume that re-aligns
+  // the buffered frames to the correct wall-clock position.
+  audio_receiver_pause();
   audio_output_flush();
   conn->stream_paused = true;
 
@@ -1378,8 +1389,7 @@ static void handle_setrateanchortime(int socket, rtsp_conn_t *conn,
   if (rate == 0.0) {
     ESP_LOGI(TAG, "SETRATEANCHORTIME: rate=0 -> PAUSING");
     conn->stream_paused = true;
-    audio_receiver_flush();
-    audio_receiver_set_playing(false);
+    audio_receiver_pause();
     audio_output_flush();
     rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
   } else {
