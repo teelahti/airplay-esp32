@@ -1295,7 +1295,7 @@ static void handle_flush(int socket, rtsp_conn_t *conn,
   (void)raw;
   (void)raw_len;
 
-  audio_receiver_flush();
+  audio_receiver_seek_flush();
   audio_output_flush();
   rtsp_send_ok(socket, conn, req->cseq);
 }

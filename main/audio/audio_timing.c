@@ -8,15 +8,26 @@
 #include "ntp_clock.h"
 #include "ptp_clock.h"
 
-#define DEFAULT_BUFFER_LATENCY_US     1000000 // 500ms buffer for network jitter
+#define DEFAULT_BUFFER_LATENCY_US     200000  // 200ms startup jitter buffer
 #define HARDWARE_OUTPUT_LATENCY_US    46000   // ~46ms I2S DMA latency
 #define MIN_STARTUP_FRAMES            4
 #define DRIFT_ADJUST_THRESHOLD_FRAMES 2
 #define TIMING_THRESHOLD_US           40000  // 40ms early/late threshold
+// If a frame is late by more than this, flush the whole buffer at once
+// instead of draining one frame per DMA callback (which would cause seconds
+// of silence while thousands of stale frames are individually dropped).
+// Kept independent of DEFAULT_BUFFER_LATENCY_US so reducing the startup
+// buffer doesn't also reduce the late-detection threshold.
+#define BULK_FLUSH_LATE_THRESHOLD_US 2000000 // 2 seconds
 // MAX_CONSECUTIVE_EARLY: number of consecutive early frames before we conclude
 // the anchor is genuinely stuck/wrong.  At ~8 ms per frame this is ~6 seconds
 // of silence, which is well beyond any normal pre-buffer depth.
 #define MAX_CONSECUTIVE_EARLY 750
+// MAX_CONSECUTIVE_LATE: number of consecutive individually-late frames before
+// we conclude the whole buffer is stale and do a bulk flush.  At ~8 ms/frame
+// this is ~160 ms — enough to absorb brief jitter but fast enough to recover
+// from the post-skip case where the anchor network_time has already passed.
+#define MAX_CONSECUTIVE_LATE 20
 
 static const char *TAG = "audio_time";
 // consecutive_early_frames is now a field in audio_timing_t so it resets
@@ -128,6 +139,7 @@ void audio_timing_reset(audio_timing_t *timing) {
   timing->pending_frame_len = 0;
   timing->ready_time_us = 0;
   timing->consecutive_early_frames = 0;
+  timing->consecutive_late_frames = 0;
 }
 
 void audio_timing_set_format(audio_timing_t *timing,
@@ -174,9 +186,10 @@ void audio_timing_set_anchor(audio_timing_t *timing,
   timing->anchor_local_time_ns = now_ns;
   timing->ptp_locked = ptp_clock_is_locked();
   timing->anchor_valid = true;
-  // Reset the early-frame counter so a burst of pre-buffered audio after
-  // a pause/resume does not accumulate into the new anchor's count.
+  // Reset frame counters so pre-buffered audio after a pause/resume or
+  // track skip does not accumulate into the new anchor's counts.
   timing->consecutive_early_frames = 0;
+  timing->consecutive_late_frames = 0;
 }
 
 void audio_timing_set_playing(audio_timing_t *timing, bool playing) {
@@ -344,8 +357,42 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
         } else if (early_us < -TIMING_THRESHOLD_US) {
           // Reset consecutive early counter on late/normal frames
           timing->consecutive_early_frames = 0;
-          // Too late: drop frame
-          ESP_LOGW(TAG, "Dropping late frame: %lld ms", -early_us / 1000LL);
+          timing->consecutive_late_frames++;
+
+          if (-early_us > BULK_FLUSH_LATE_THRESHOLD_US ||
+              timing->consecutive_late_frames > MAX_CONSECUTIVE_LATE) {
+            // Bulk flush the stale buffer.  Two triggers:
+            //  1. A single frame is massively late (> 2 s): e.g. after resume
+            //     from a long pause where the phone advanced the anchor past
+            //     its pre-buffer window.
+            //  2. Many consecutive individually-late frames (e.g. after a
+            //     track skip where the anchor's network_time has already
+            //     passed): the individual-drop path would drain hundreds of
+            //     frames one-by-one over several seconds; bulk flush instead.
+            ESP_LOGW(TAG,
+                     "Bulk flush: frame %lld ms late, consecutive_late=%d, "
+                     "flushing %d stale frames",
+                     -early_us / 1000LL, timing->consecutive_late_frames,
+                     audio_buffer_get_frame_count(buffer));
+            if (from_pending) {
+              timing->pending_valid = false;
+              timing->pending_frame_len = 0;
+            } else {
+              audio_buffer_return(buffer, item);
+            }
+            audio_buffer_flush(buffer);
+            timing->playout_started = false;
+            timing->ready_time_us = 0;
+            timing->consecutive_late_frames = 0;
+            if (stats) {
+              stats->late_frames++;
+            }
+            return 0;
+          }
+
+          // Too late but within normal range: drop this single frame
+          ESP_LOGW(TAG, "Dropping late frame: %lld ms (consecutive=%d)",
+                   -early_us / 1000LL, timing->consecutive_late_frames);
           if (stats) {
             stats->late_frames++;
           }
@@ -360,8 +407,9 @@ size_t audio_timing_read(audio_timing_t *timing, audio_buffer_t *buffer,
       }
     }
 
-    // Frame is on time - reset early counter
+    // Frame is on time - reset both direction counters
     timing->consecutive_early_frames = 0;
+    timing->consecutive_late_frames = 0;
 
     // Copy PCM data to output
     memcpy(out, pcm, frame_samples * channels * sizeof(int16_t));

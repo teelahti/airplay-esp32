@@ -326,6 +326,24 @@ int16_t *audio_buffer_get_decode_buffer(audio_buffer_t *buffer,
   return buffer->decode_buffer;
 }
 
+/* ---------- oldest timestamp peek ---------- */
+
+bool audio_buffer_oldest_timestamp(audio_buffer_t *buffer,
+                                   uint32_t *timestamp) {
+  if (!buffer || !buffer->pool || !timestamp) {
+    return false;
+  }
+
+  portENTER_CRITICAL(&buffer->lock);
+  if (buffer->count == 0) {
+    portEXIT_CRITICAL(&buffer->lock);
+    return false;
+  }
+  *timestamp = slot_timestamp(buffer, buffer->sorted[0]);
+  portEXIT_CRITICAL(&buffer->lock);
+  return true;
+}
+
 /* ---------- queue decoded (splits large frames into chunks) ---------- */
 
 bool audio_buffer_queue_decoded(audio_buffer_t *buffer, audio_stats_t *stats,

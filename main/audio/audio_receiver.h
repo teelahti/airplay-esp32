@@ -109,9 +109,19 @@ size_t audio_receiver_read(int16_t *buffer, size_t samples);
 bool audio_receiver_has_data(void);
 
 /**
- * Flush audio buffer
+ * Flush audio buffer (full stop path — does not remap anchor timing).
  */
 void audio_receiver_flush(void);
+
+/**
+ * Flush audio buffer for a mid-stream seek (FLUSH / FLUSHBUFFERED).
+ * Identical to audio_receiver_flush() but also sets an internal flag so
+ * that the next anchor received via audio_receiver_set_anchor_time() has its
+ * network_time_ns remapped to now + output_latency.  This prevents the phone's
+ * pre-buffer depth (up to ~5 s) from appearing as silence at the start of
+ * the new position.
+ */
+void audio_receiver_seek_flush(void);
 
 /**
  * Pause playback while preserving the timing anchor.

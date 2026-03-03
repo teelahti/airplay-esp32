@@ -30,7 +30,7 @@ typedef struct __attribute__((packed)) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
 #define MAX_RING_BUFFER_FRAMES 5000
 #else
-#define MAX_RING_BUFFER_FRAMES 1000
+#define MAX_RING_BUFFER_FRAMES 500
 #endif
 #define BYTES_PER_FRAME                                          \
   ((size_t)sizeof(audio_frame_header_t) +                        \
@@ -40,7 +40,7 @@ typedef struct __attribute__((packed)) {
 #ifdef CONFIG_IDF_TARGET_ESP32S3
 #define MAX_BUFFER_FRAMES 5000
 #else
-#define MAX_BUFFER_FRAMES 1000
+#define MAX_BUFFER_FRAMES 500
 #endif
 
 typedef struct {
@@ -71,3 +71,8 @@ int16_t *audio_buffer_get_decode_buffer(audio_buffer_t *buffer,
 bool audio_buffer_queue_decoded(audio_buffer_t *buffer, audio_stats_t *stats,
                                 uint32_t timestamp, const int16_t *pcm_data,
                                 size_t samples, int channels);
+/**
+ * Peek at the RTP timestamp of the oldest (lowest-timestamp) frame in the
+ * buffer without removing it.  Returns false if the buffer is empty.
+ */
+bool audio_buffer_oldest_timestamp(audio_buffer_t *buffer, uint32_t *timestamp);

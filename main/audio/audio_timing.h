@@ -27,6 +27,11 @@ typedef struct {
   // Early-frame guard: counts consecutive early frames to detect a stuck anchor.
   // Reset whenever a new anchor is set or a late/on-time frame is played.
   int consecutive_early_frames;
+  // Late-frame guard: counts consecutive individually-late frames.  When this
+  // exceeds MAX_CONSECUTIVE_LATE the whole buffer is considered stale (e.g.
+  // after a track skip where the anchor network_time has already passed) and a
+  // bulk flush is triggered instead of draining frame-by-frame.
+  int consecutive_late_frames;
 } audio_timing_t;
 
 void audio_timing_init(audio_timing_t *timing, size_t pending_capacity);
