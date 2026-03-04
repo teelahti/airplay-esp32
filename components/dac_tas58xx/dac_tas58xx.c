@@ -728,27 +728,6 @@ static esp_err_t write_biquad_raw(uint8_t page, uint8_t sub_addr,
                        EQ_COEFF_BYTES);
 }
 
-static esp_err_t read_biquad_coeff(uint8_t page, uint8_t reg_start,
-                                   int32_t coeff[5]) {
-  esp_err_t err;
-  err = tas58xx_write_reg(REG_PAGE_SEL, page);
-  if (err != ESP_OK)
-    return err;
-
-  uint8_t buf[BQ_COEFF_SIZE];
-  err = i2c_bus_read(tas58xx_device_handle, tas58xx_addr, reg_start, buf,
-                     BQ_COEFF_SIZE);
-  if (err != ESP_OK)
-    return err;
-
-  for (int i = 0; i < 5; i++) {
-    coeff[i] = ((int32_t)buf[i * 4 + 0] << 24) |
-               ((int32_t)buf[i * 4 + 1] << 16) |
-               ((int32_t)buf[i * 4 + 2] << 8) | ((int32_t)buf[i * 4 + 3]);
-  }
-  return ESP_OK;
-}
-
 static esp_err_t write_dsp_coeff32(uint8_t page, uint8_t reg, int32_t val) {
   esp_err_t err = tas58xx_write_reg(REG_PAGE_SEL, page);
   if (err != ESP_OK)

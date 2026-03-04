@@ -29,7 +29,6 @@ typedef struct __attribute__((packed)) {
    ((size_t)AAC_FRAMES_PER_PACKET * (size_t)AUDIO_MAX_CHANNELS * \
     (size_t)AUDIO_BYTES_PER_SAMPLE))
 #define AUDIO_BUFFER_SIZE (MAX_RING_BUFFER_FRAMES * BYTES_PER_FRAME)
-#define MAX_BUFFER_FRAMES 500
 
 typedef struct {
   uint8_t *pool;                // Pre-allocated frame data in PSRAM
