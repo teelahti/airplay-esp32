@@ -59,10 +59,6 @@ static void start_airplay_services(void) {
 
   s_airplay_started = true;
   ESP_LOGI(TAG, "AirPlay ready");
-
-#ifdef CONFIG_BT_A2DP_ENABLE
-  bt_a2dp_sink_set_discoverable(false);
-#endif
 }
 
 static void stop_airplay_services(void) {
@@ -77,10 +73,6 @@ static void stop_airplay_services(void) {
 
   s_airplay_started = false;
   ESP_LOGI(TAG, "AirPlay stopped");
-
-#ifdef CONFIG_BT_A2DP_ENABLE
-  bt_a2dp_sink_set_discoverable(true);
-#endif
 }
 
 static void wifi_monitor_task(void *pvParameters) {

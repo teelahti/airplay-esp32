@@ -490,18 +490,13 @@ static void bt_avrc_tg_evt_handler(uint16_t event, void *param) {
   case ESP_AVRC_TG_SET_ABSOLUTE_VOLUME_CMD_EVT: {
     uint8_t volume = tg->set_abs_vol.volume; // 0-127
     s_avrc_volume = volume;
-    ESP_LOGI(TAG, "Set absolute volume: %d/127", volume);
+    ESP_LOGD(TAG, "Set absolute volume: %d/127", volume);
 
     // Map 0-127 → -30..0 dB and apply to DAC
+    // dac_set_volume does I2C — safe here because bt_app_task dispatches
+    // sequentially, but keep it lightweight
     float volume_db = ((float)volume / 127.0f) * 30.0f - 30.0f;
     dac_set_volume(volume_db);
-    /* NVS save deferred to disconnect to avoid stalling the BT task */
-
-    // Acknowledge the volume change
-    esp_avrc_rn_param_t rn_param;
-    rn_param.volume = volume;
-    esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_RN_RSP_CHANGED,
-                            &rn_param);
     break;
   }
 
