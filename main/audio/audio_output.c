@@ -54,12 +54,13 @@ static void playback_task(void *arg) {
     ESP_LOGE(TAG, "Failed to allocate buffers");
     free(pcm);
     free(silence);
+    playback_task_handle = NULL;
     vTaskDelete(NULL);
     return;
   }
 
   size_t written;
-  while (true) {
+  while (playback_running) {
     if (flush_requested) {
       flush_requested = false;
       i2s_channel_disable(tx_handle);
@@ -78,6 +79,11 @@ static void playback_task(void *arg) {
       vTaskDelay(1);
     }
   }
+
+  free(pcm);
+  free(silence);
+  playback_task_handle = NULL;
+  vTaskDelete(NULL);
 }
 
 esp_err_t audio_output_init(void) {
@@ -125,6 +131,7 @@ void audio_output_start(void) {
   if (playback_task_handle != NULL) {
     return; // already running
   }
+  playback_running = true;
   xTaskCreatePinnedToCore(playback_task, "audio_play", 4096, NULL, 7,
                           &playback_task_handle, PLAYBACK_CORE);
 }

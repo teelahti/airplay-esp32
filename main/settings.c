@@ -114,7 +114,17 @@ esp_err_t settings_get_bt_volume(uint8_t *volume) {
     return ESP_ERR_INVALID_ARG;
   }
   if (!g_bt_volume_loaded) {
-    return ESP_ERR_NOT_FOUND;
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
+    if (err != ESP_OK) {
+      return err;
+    }
+    err = nvs_get_u8(nvs, NVS_KEY_BT_VOLUME, &g_bt_volume);
+    nvs_close(nvs);
+    if (err != ESP_OK) {
+      return err;
+    }
+    g_bt_volume_loaded = true;
   }
   *volume = g_bt_volume;
   return ESP_OK;
