@@ -46,6 +46,11 @@ else()
     list(APPEND SRC_FILES "audio/audio_output.c")
 endif()
 
+# Bluetooth A2DP sink (only available on ESP32 with Classic BT)
+if(CONFIG_BT_A2DP_ENABLE)
+    list(APPEND SRC_FILES "audio/a2dp_sink.c")
+endif()
+
 set( INC_DIRS
     "." 
     "audio" 
@@ -73,6 +78,11 @@ set( DEPS
     dac
     display
 )
+
+# Bluetooth component only needed when A2DP is enabled
+if(CONFIG_BT_A2DP_ENABLE)
+    list(APPEND DEPS bt)
+endif()
 
 idf_component_register(
     SRCS ${SRC_FILES}
