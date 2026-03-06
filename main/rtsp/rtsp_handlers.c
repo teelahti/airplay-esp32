@@ -19,6 +19,9 @@
 #include "audio_output.h"
 #include "audio_receiver.h"
 #include "audio_stream.h"
+#ifdef CONFIG_BT_A2DP_ENABLE
+#include "dac.h"
+#endif
 #include "hap.h"
 #include "ntp_clock.h"
 #include "plist.h"
@@ -985,6 +988,12 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
                                       conn->client_control_port);
   }
 
+#ifdef CONFIG_BT_A2DP_ENABLE
+  // Apply saved AirPlay volume before playback starts — the DAC may have
+  // been left at a different level by Bluetooth A2DP.
+  dac_set_volume(conn->volume_db);
+#endif
+
   audio_receiver_set_playing(true);
   conn->stream_paused = false;
   conn->stream_active = true;
@@ -998,6 +1007,12 @@ static void handle_record(int socket, rtsp_conn_t *conn,
 
   ESP_LOGI(TAG, "RECORD received - starting playback, stream_paused was %d",
            conn->stream_paused);
+
+#ifdef CONFIG_BT_A2DP_ENABLE
+  // Ensure DAC is at the saved AirPlay volume before any audio plays —
+  // Bluetooth A2DP may have left it at a different level.
+  dac_set_volume(conn->volume_db);
+#endif
 
   if (conn->stream_paused) {
     // Resuming from PAUSE: the stream listener is still running and the
