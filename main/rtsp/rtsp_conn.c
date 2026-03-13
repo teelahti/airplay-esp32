@@ -74,8 +74,9 @@ void rtsp_conn_cleanup(rtsp_conn_t *conn) {
     return;
   }
 
-  // Stop audio receiver
-  audio_receiver_stop();
+  // Note: audio_receiver_stop() is NOT called here — it is a global operation
+  // and must be managed by the caller (rtsp_server cleanup / handle_teardown)
+  // to avoid killing a new session's audio during client replacement.
 
   // Close sockets
   if (conn->data_socket >= 0) {

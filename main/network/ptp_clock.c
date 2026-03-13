@@ -432,9 +432,12 @@ void ptp_clock_stop(void) {
     ptp.general_socket = -1;
   }
 
-  // Wait for task to exit
-  if (ptp.task_handle) {
-    vTaskDelay(pdMS_TO_TICKS(200));
+  // Wait for task to exit (task sets task_handle = NULL before vTaskDelete)
+  for (int i = 0; i < 20 && ptp.task_handle != NULL; i++) {
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+  if (ptp.task_handle != NULL) {
+    ESP_LOGW(TAG, "PTP task did not exit in time");
   }
   task_free_spiram(&ptp.task_mem);
 }

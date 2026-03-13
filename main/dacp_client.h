@@ -81,3 +81,10 @@ void dacp_send_volume(float volume_percent);
  * @return true if DACP-ID and Active-Remote are set
  */
 bool dacp_is_active(void);
+
+/**
+ * Probe mDNS to check if the client's DACP service is still advertised.
+ * Used in AirPlay v1 mode to differentiate pause from genuine disconnect.
+ * @return true if the _dacp._tcp service matching the current session is found
+ */
+bool dacp_probe_service(void);

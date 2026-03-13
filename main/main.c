@@ -173,6 +173,11 @@ static void on_airplay_client_event(rtsp_event_t event,
     ESP_LOGI(TAG, "AirPlay client connected — disabling BT");
     bt_a2dp_sink_set_discoverable(false);
     break;
+  case RTSP_EVENT_PAUSED:
+    // V1 grace period active — keep BT hidden so the phone reconnects
+    // to AirPlay rather than falling back to BT.
+    ESP_LOGI(TAG, "AirPlay paused — keeping BT hidden");
+    break;
   case RTSP_EVENT_DISCONNECTED:
     ESP_LOGI(TAG, "AirPlay client disconnected — enabling BT");
     bt_a2dp_sink_set_discoverable(true);

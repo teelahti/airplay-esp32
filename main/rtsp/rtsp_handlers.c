@@ -1622,7 +1622,11 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
   if (!has_streams) {
     // Full teardown — server cleanup will emit RTSP_EVENT_DISCONNECTED
     // when the TCP connection closes.
+#ifndef CONFIG_AIRPLAY_FORCE_V1
+    // In v1 mode, keep DACP session alive so the grace period can
+    // probe mDNS to differentiate pause from real disconnect.
     dacp_clear_session();
+#endif
     conn->dacp_id[0] = '\0';
     conn->active_remote[0] = '\0';
     ntp_clock_stop();

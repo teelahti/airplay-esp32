@@ -51,7 +51,7 @@
 #include "led.h"
 #include "soc/gpio_struct.h"
 
-#define ISR_HANDLER_TASK_STACK_SIZE 2048
+#define ISR_HANDLER_TASK_STACK_SIZE 4096
 #define ISR_HANDLER_TASK_PRIORITY   5
 #define JACK_DEBOUNCE_MS            200
 

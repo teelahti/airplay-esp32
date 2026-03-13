@@ -252,17 +252,63 @@ cleanup:
   ESP_LOGI(TAG, "Client slot %d disconnected", slot_idx);
   free(buffer);
   close(slot->socket);
+  slot->socket = -1;
 
-  // Full teardown: stop audio, NTP, and notify listeners
+  // Immediate: stop audio and NTP
   audio_receiver_stop();
   audio_output_flush();
   ntp_clock_stop();
-  dacp_clear_session();
-  ptp_clock_init();  // Restart PTP (stopped during v1 SETUP to free sockets)
-  rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
 
-  // Always stop event task before closing its socket
-  rtsp_stop_event_port_task();
+#ifdef CONFIG_AIRPLAY_FORCE_V1
+  // AirPlay v1 grace period: iOS sends TEARDOWN + TCP close for both pause
+  // and genuine disconnect. Wait briefly and probe DACP mDNS to tell them
+  // apart. Emit PAUSED immediately so listeners (e.g. BT switching) don't
+  // act on the disconnect prematurely.
+  if (!slot->should_stop) {
+    rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
+
+    // Phase 1: let mDNS settle (3 s)
+    for (int i = 0; i < 6 && !slot->should_stop; i++) {
+      vTaskDelay(pdMS_TO_TICKS(500));
+    }
+
+    // Phase 2: probe DACP service — if still advertised, wait for reconnect
+    if (!slot->should_stop) {
+      if (dacp_probe_service()) {
+        ESP_LOGI(TAG, "DACP still advertised — waiting for reconnect");
+        for (int i = 0; i < 54 && !slot->should_stop; i++) {
+          vTaskDelay(pdMS_TO_TICKS(500));
+        }
+      } else {
+        ESP_LOGI(TAG, "DACP service gone — genuine disconnect");
+      }
+    }
+
+    if (slot->is_old) {
+      // New client connected during grace period — treat as reconnect
+      ESP_LOGI(TAG, "Client reconnected during grace period");
+    } else {
+      ESP_LOGI(TAG, "Grace period expired — full disconnect");
+      dacp_clear_session();
+      rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
+    }
+  } else {
+    // Forcefully stopped (server shutdown or replaced by new client)
+    dacp_clear_session();
+    rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
+  }
+#else
+  dacp_clear_session();
+  rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
+#endif
+
+  // When being replaced by a new client (is_old), skip global state changes —
+  // the new session's SETUP already manages PTP and the event port task.
+  if (!slot->is_old) {
+    ptp_clock_init();  // Restart PTP (stopped during v1 SETUP to free sockets)
+    rtsp_stop_event_port_task();
+  }
+
   if (conn->event_socket >= 0) {
     close(conn->event_socket);
     conn->event_socket = -1;

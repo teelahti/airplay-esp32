@@ -184,8 +184,7 @@ void dacp_set_session(const char *dacp_id, const char *active_remote,
   xSemaphoreGive(s_mutex);
 
   if (s_session_valid) {
-    ESP_LOGI(TAG, "DACP session: id=%s remote=%s", s_dacp_id,
-             s_active_remote);
+    ESP_LOGD(TAG, "DACP session: id=%s remote=%s", s_dacp_id, s_active_remote);
   }
 }
 
@@ -201,7 +200,7 @@ void dacp_clear_session(void) {
   s_session_valid = false;
   xSemaphoreGive(s_mutex);
 
-  ESP_LOGI(TAG, "DACP session cleared");
+  ESP_LOGD(TAG, "DACP session cleared");
 }
 
 void dacp_send_playpause(void) { send_dacp_request("playpause"); }
@@ -240,4 +239,40 @@ bool dacp_is_active(void) {
     xSemaphoreGive(s_mutex);
   }
   return active;
+}
+
+bool dacp_probe_service(void) {
+  if (!s_initialized) {
+    return false;
+  }
+
+  char dacp_id_copy[DACP_ID_MAX];
+  if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+    return false;
+  }
+  if (s_dacp_id[0] == '\0') {
+    xSemaphoreGive(s_mutex);
+    return false;
+  }
+  strlcpy(dacp_id_copy, s_dacp_id, sizeof(dacp_id_copy));
+  xSemaphoreGive(s_mutex);
+
+  mdns_result_t *results = NULL;
+  esp_err_t err = mdns_query_ptr("_dacp", "_tcp", 2000, 8, &results);
+  if (err != ESP_OK || !results) {
+    return false;
+  }
+
+  bool found = false;
+  for (mdns_result_t *r = results; r; r = r->next) {
+    if (r->instance_name &&
+        (strcasecmp(r->instance_name, dacp_id_copy) == 0 ||
+         strcasestr(r->instance_name, dacp_id_copy) != NULL)) {
+      found = true;
+      break;
+    }
+  }
+
+  mdns_query_results_free(results);
+  return found;
 }
