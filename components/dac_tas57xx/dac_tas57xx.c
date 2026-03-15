@@ -13,6 +13,14 @@
 #include "driver/i2c_types.h"
 #include "esp_log.h"
 
+#if defined(CONFIG_TAS57XX_HF6)
+#include "hybridflows/tt_hf6.h"
+#define TAS57XX_HF_SEQ tt_hf6_seq
+#else
+#include "hybridflows/tt_hf1.h"
+#define TAS57XX_HF_SEQ tt_hf1_seq
+#endif
+
 #define TAS575x (0x98 >> 1)
 #define TAS578x (0x90 >> 1)
 
@@ -26,21 +34,15 @@ struct tas57xx_cmd_s {
   uint8_t value;
 };
 
+// Registers applied after the HF config (not covered by the HF flow)
 static const struct tas57xx_cmd_s tas57xx_init_seq[] = {
     {0x00, 0x00}, // select page 0
-    {0x02, 0x10}, // standby
     {0x0d, 0x10}, // use SCK for PLL
     {0x25, 0x08}, // ignore SCK halt
-    {0x08, 0x10}, // Mute control enable
+    {0x08, 0x10}, // Mute control enable (GPIO3)
     {0x54, 0x02}, // Mute output control
-    {0x3D, 0x6C}, // Set chan B volume -70db
-    {0x3E, 0x6C}, // Set chan A volume -70db
-    // {0x28, 0x03}, // I2S length 32 bits
-    {0x28, 0x00}, // I2S length 16 bits
-    {0x00, 0x01}, // select page 1
-    {0x00, 0x11}, // Analogue Gain for chan A/B -6db
-    {0x00, 0x00}, // select page 0
-    {0x02, 0x00}, // restart
+    {0x3D, 0x6C}, // Set chan B volume -70dB
+    {0x3E, 0x6C}, // Set chan A volume -70dB
     {0xff, 0xff}  // end of table
 };
 
@@ -83,6 +85,30 @@ static esp_err_t i2c_bus_add_device(uint8_t addr,
                                     i2c_master_dev_handle_t *dev_handle);
 static esp_err_t i2c_bus_remove_device(i2c_master_dev_handle_t dev_handle);
 
+/**
+ * Write a hybrid flow configuration byte stream to the DAC.
+ * Format: [reg, len, data[0..len-1], ...] terminated by 0xFF, 0xFF.
+ * The HF config manages its own standby entry/exit.
+ */
+static esp_err_t tas57xx_write_hf(const uint8_t *stream) {
+  esp_err_t err;
+  int pos = 0;
+  while (!(stream[pos] == 0xFF && stream[pos + 1] == 0xFF)) {
+    uint8_t reg = stream[pos];
+    uint8_t len = stream[pos + 1];
+    const uint8_t *data = &stream[pos + 2];
+    err = i2c_bus_write(tas57xx_device_handle, tas57xx_addr, reg, data, len);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "HF write failed at offset %d (reg 0x%02X): %s", pos, reg,
+               esp_err_to_name(err));
+      return err;
+    }
+    pos += 2 + len;
+  }
+  ESP_LOGI(TAG, "Hybrid flow configuration applied");
+  return ESP_OK;
+}
+
 static esp_err_t tas57xx_init(void *i2c_bus) {
   esp_err_t err = ESP_OK;
 
@@ -105,18 +131,22 @@ static esp_err_t tas57xx_init(void *i2c_bus) {
     return err;
   }
 
-  // Initialize
+  // Apply hybrid flow configuration (handles standby enter/exit internally)
+  err = tas57xx_write_hf(TAS57XX_HF_SEQ);
+  if (err != ESP_OK) {
+    return err;
+  }
+
+  // Apply additional init registers not covered by the HF config
   for (int i = 0; tas57xx_init_seq[i].reg != 0xff; i++) {
     err = i2c_bus_write(tas57xx_device_handle, tas57xx_addr,
                         tas57xx_init_seq[i].reg, &tas57xx_init_seq[i].value,
                         sizeof(uint8_t));
     if (err != ESP_OK) {
-      ESP_LOGE(TAG, "Failed to initialize TAS57xx at 0x%02x, err: %s",
+      ESP_LOGE(TAG, "Failed to write init reg 0x%02x: %s",
                tas57xx_init_seq[i].reg, esp_err_to_name(err));
       return err;
     }
-    ESP_LOGD(TAG, "i2c write %x at %u", tas57xx_init_seq[i].reg,
-             tas57xx_init_seq[i].value);
   }
 
   return err;
