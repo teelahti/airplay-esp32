@@ -383,7 +383,6 @@ static esp_err_t tas58xx_init(void *i2c_bus) {
       vTaskDelay(pdMS_TO_TICKS(5));
     }
   }
-  ESP_LOGI(TAG, "Init sequence complete");
 
   // Give the device time to reach PLAY state
   vTaskDelay(pdMS_TO_TICKS(10));
@@ -415,30 +414,8 @@ static esp_err_t tas58xx_deinit(void) {
 
 static void tas58xx_set_power_mode(dac_power_mode_t mode) {
   REG_LOCK();
-
-  const char *mode_str;
-  switch (mode) {
-  case DAC_POWER_ON:
-    mode_str = "ON(PLAY)";
-    break;
-  case DAC_POWER_STANDBY:
-    mode_str = "STANDBY(HIZ)";
-    break;
-  case DAC_POWER_OFF:
-    mode_str = "OFF(DEEP_SLEEP)";
-    break;
-  default:
-    ESP_LOGW(TAG, "Unhandled power mode %d", mode);
-    REG_UNLOCK();
-    return;
-  }
-
-  // Read current state for logging
   uint8_t cur_ctrl2 = 0;
   tas58xx_read_reg(REG_DEVICE_CTRL2, &cur_ctrl2);
-  ESP_LOGI(TAG, "Power mode -> %s (DEVICE_CTRL2 was 0x%02X)", mode_str,
-           cur_ctrl2);
-
   uint8_t cur_state = cur_ctrl2 & CTRL2_STATE_MASK;
 
   if (mode == DAC_POWER_ON) {
@@ -446,7 +423,7 @@ static void tas58xx_set_power_mode(dac_power_mode_t mode) {
     // The PLL needs valid I2S clocks to lock — they must be present
     // by the time this function is called.
     if (cur_state != CTRL2_HIZ) {
-      ESP_LOGI(TAG, "Transitioning to HIZ first (from state %d)", cur_state);
+      ESP_LOGW(TAG, "Transitioning to HIZ first (from state %d)", cur_state);
       tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_HIZ);
       vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -480,7 +457,6 @@ static void tas58xx_set_power_mode(dac_power_mode_t mode) {
     vTaskDelay(pdMS_TO_TICKS(5));
 
     // Request transition to PLAY (unmuted)
-    ESP_LOGI(TAG, "Requesting PLAY...");
     tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_PLAY);
 
     // Poll POWER_STATE until the device actually reaches PLAY.
@@ -609,7 +585,7 @@ static void tas58xx_set_volume(float volume_airplay_db) {
     reg_val = (uint8_t)raw;
   }
 
-  ESP_LOGI(TAG, "Volume: AirPlay %.1f dB -> DAC %.1f dB -> reg 0x%02X",
+  ESP_LOGD(TAG, "Volume: AirPlay %.1f dB -> DAC %.1f dB -> reg 0x%02X",
            volume_airplay_db, db_level, reg_val);
 
   tas58xx_write_reg(REG_DIG_VOL, reg_val);

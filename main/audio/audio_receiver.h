@@ -151,9 +151,14 @@ void audio_receiver_pause(void);
 void audio_receiver_set_output_latency_us(uint32_t latency_us);
 
 /**
- * Get current output latency in microseconds.
+ * Get current output latency in microseconds (buffer latency only).
  */
 uint32_t audio_receiver_get_output_latency_us(void);
+
+/**
+ * Get hardware output latency in microseconds (I2S DMA pipeline delay).
+ */
+uint32_t audio_receiver_get_hardware_latency_us(void);
 
 /**
  * Provide anchor timing information from SETRATEANCHORTIME.
