@@ -41,7 +41,8 @@
 
 /* Ring buffer bridging the playback task (producer) and the USB input
  * callback (consumer).  Sized for ~50 ms of stereo 16-bit audio.       */
-#define USB_RINGBUF_BYTES (OUTPUT_RATE / 10 * 4) /* ~100 ms stereo 16-bit */
+#define USB_RINGBUF_BYTES \
+  ((size_t)(OUTPUT_RATE) / 10 * 4) /* ~100 ms stereo 16-bit */
 
 static RingbufHandle_t s_ringbuf;
 static volatile bool flush_requested = false;
@@ -52,8 +53,8 @@ static volatile bool resample_reinit_needed = false;
  * Called by the UAC stack when the host requests audio data.
  * We fill buf from the ring buffer; on underrun we send silence.       */
 
-static esp_err_t usb_input_cb(uint8_t *buf, size_t len,
-                               size_t *bytes_read, void *cb_ctx) {
+static esp_err_t usb_input_cb(uint8_t *buf, size_t len, size_t *bytes_read,
+                              void *cb_ctx) {
   size_t item_size = 0;
   void *data = xRingbufferReceiveUpTo(s_ringbuf, &item_size, 0, len);
   if (data && item_size > 0) {
@@ -128,7 +129,7 @@ static void playback_task(void *arg) {
       led_audio_feed(silence, FRAME_SAMPLES);
       /* Feed silence to keep the USB stream flowing */
       xRingbufferSend(s_ringbuf, silence, (size_t)FRAME_SAMPLES * 4,
-                       pdMS_TO_TICKS(10));
+                      pdMS_TO_TICKS(10));
       vTaskDelay(1);
     }
   }
