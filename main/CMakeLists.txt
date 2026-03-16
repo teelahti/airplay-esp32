@@ -88,10 +88,16 @@ set( DEPS
     esp_eth
 )
 
+# TODO: why these fall over in CI and fine locally...
 # Bluetooth component only needed when A2DP is enabled
-if(CONFIG_BT_A2DP_ENABLE)
+#if(CONFIG_BT_A2DP_ENABLE)
     list(APPEND DEPS bt)
-endif()
+#endif()
+
+# Ethernet component only needed when W5500 is enabled
+#if(CONFIG_ETH_W5500_ENABLED)
+    list(APPEND DEPS esp_eth)
+#endif()
 
 idf_component_register(
     SRCS ${SRC_FILES}
