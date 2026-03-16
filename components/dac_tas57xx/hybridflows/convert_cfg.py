@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Convert a PPC2 TAS57xx .cfg file (I2C write commands) to a C header with a
-packed byte stream: each command is [reg, len, data[0..len-1]] with no padding.
-The stream is terminated by 0xFF, 0xFF.
+"""Convert a PPC2 TAS57xx .cfg file (I2C write commands) to a C header or raw
+binary with a packed byte stream: each command is [reg, len, data[0..len-1]]
+with no padding. The stream is terminated by 0xFF, 0xFF.
 
-Usage: python3 convert_cfg.py tt_hf1.cfg > tt_hf1.h
+Usage:
+  python3 convert_cfg.py tt_hf1.cfg           # C header to stdout
+  python3 convert_cfg.py --bin tt_hf1.cfg      # raw .bin file
 """
 
 import sys
@@ -221,8 +223,41 @@ def convert(cfg_path):
     return '\n'.join(out)
 
 
+def convert_bin(cfg_path):
+    """Convert a .cfg file to a raw binary packed byte stream."""
+    with open(cfg_path) as f:
+        lines = f.readlines()
+
+    data = bytearray()
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        if stripped.startswith('w '):
+            parts = stripped.split()
+            reg = int(parts[2], 16)
+            data_bytes = [int(b, 16) for b in parts[3:]]
+            data.append(reg)
+            data.append(len(data_bytes))
+            data.extend(data_bytes)
+
+    data.extend([0xFF, 0xFF])
+    return bytes(data)
+
+
 if __name__ == '__main__':
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <cfg_file>", file=sys.stderr)
+    if len(sys.argv) < 2:
+        print(f"Usage: {sys.argv[0]} [--bin] <cfg_file>", file=sys.stderr)
         sys.exit(1)
-    print(convert(sys.argv[1]))
+
+    bin_mode = '--bin' in sys.argv
+    cfg_file = [a for a in sys.argv[1:] if a != '--bin'][0]
+
+    if bin_mode:
+        out_path = cfg_file.rsplit('.', 1)[0] + '.bin'
+        data = convert_bin(cfg_file)
+        with open(out_path, 'wb') as f:
+            f.write(data)
+        print(f"Wrote {len(data)} bytes to {out_path}", file=sys.stderr)
+    else:
+        print(convert(cfg_file))
