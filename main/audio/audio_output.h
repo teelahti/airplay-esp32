@@ -3,17 +3,17 @@
 #include "esp_err.h"
 
 /**
- * Initialize I2S audio output
+ * Initialize the audio output backend (I2S / SPDIF / USB UAC).
  */
 esp_err_t audio_output_init(void);
 
 /**
- * Start the audio playback task
+ * Start the audio playback task.
  */
 void audio_output_start(void);
 
 /**
- * Flush I2S DMA buffers (clears stale audio on pause/seek)
+ * Flush output buffers (clears stale audio on pause/seek).
  */
 void audio_output_flush(void);
 
