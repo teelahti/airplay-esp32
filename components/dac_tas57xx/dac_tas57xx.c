@@ -34,9 +34,11 @@ struct tas57xx_cmd_s {
   uint8_t value;
 };
 
-// Registers applied after the HF config (not covered by the HF flow)
+// Registers applied after the HF config (not covered by the HF flow).
+// HF exits standby unmuted, so mute first to prevent pop.
 static const struct tas57xx_cmd_s tas57xx_init_seq[] = {
     {0x00, 0x00}, // select page 0
+    {0x03, 0x11}, // mute both channels before any other change
     {0x0d, 0x10}, // use SCK for PLL
     {0x25, 0x08}, // ignore SCK halt
     {0x08, 0x10}, // Mute control enable (GPIO3)
@@ -171,12 +173,16 @@ static esp_err_t tas57xx_deinit(void) {
 static void tas57xx_set_power_mode(dac_power_mode_t mode) {
   switch (mode) {
   case DAC_POWER_STANDBY:
+    write_cmd(TAS57XX_MUTE);
     write_cmd(TAS57XX_STANDBY);
     break;
   case DAC_POWER_ON:
+    write_cmd(TAS57XX_MUTE);
     write_cmd(TAS57XX_ACTIVE);
+    write_cmd(TAS57XX_UNMUTE);
     break;
   case DAC_POWER_OFF:
+    write_cmd(TAS57XX_MUTE);
     write_cmd(TAS57XX_DOWN);
     break;
   default:
