@@ -183,6 +183,10 @@ static void bt_i2s_writer_task(void *arg) {
 }
 
 static void i2s_task_start(void) {
+  if (s_i2s_task_handle != NULL) {
+    return;
+  }
+
   s_ringbuf_mode = RINGBUF_MODE_PREFETCHING;
 
   if (s_ringbuf == NULL) {
@@ -237,18 +241,21 @@ static void i2s_task_stop(void) {
 /* ========================================================================== */
 
 static void bt_a2dp_data_cb(const uint8_t *data, uint32_t len) {
-  if (s_ringbuf == NULL || len == 0) {
+  // Snapshot the ringbuf handle so it can't be freed between the NULL
+  // check and the API calls (i2s_task_stop sets s_ringbuf = NULL).
+  RingbufHandle_t rb = s_ringbuf;
+  if (rb == NULL || len == 0) {
     return;
   }
 
   // Feed LED VU meter from the decoded PCM
   led_audio_feed((const int16_t *)data, len / 4);
 
-  size_t free_size = xRingbufferGetCurFreeSize(s_ringbuf);
+  size_t free_size = xRingbufferGetCurFreeSize(rb);
 
   switch (s_ringbuf_mode) {
   case RINGBUF_MODE_PREFETCHING:
-    xRingbufferSend(s_ringbuf, data, len, 0);
+    xRingbufferSend(rb, data, len, 0);
     if ((RINGBUF_SIZE - free_size + len) >= RINGBUF_PREFETCH) {
       s_ringbuf_mode = RINGBUF_MODE_PROCESSING;
       xSemaphoreGive(s_i2s_sem);
@@ -260,14 +267,14 @@ static void bt_a2dp_data_cb(const uint8_t *data, uint32_t len) {
       s_ringbuf_mode = RINGBUF_MODE_DROPPING;
       ESP_LOGW(TAG, "Ringbuf full, dropping");
     } else {
-      xRingbufferSend(s_ringbuf, data, len, 0);
+      xRingbufferSend(rb, data, len, 0);
     }
     break;
 
   case RINGBUF_MODE_DROPPING:
     if (free_size > RINGBUF_PREFETCH) {
       s_ringbuf_mode = RINGBUF_MODE_PROCESSING;
-      xRingbufferSend(s_ringbuf, data, len, 0);
+      xRingbufferSend(rb, data, len, 0);
     }
     break;
   }

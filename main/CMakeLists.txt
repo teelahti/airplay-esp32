@@ -10,6 +10,7 @@ set( SRC_FILES
     "audio/audio_buffer.c"
     "audio/audio_timing.c"
     "audio/audio_crypto.c"
+    "audio/audio_resample.c"
     "rtsp/rtsp_server.c"
     "rtsp/rtsp_conn.c"
     "rtsp/rtsp_message.c"
@@ -87,18 +88,22 @@ set( DEPS
     esp_driver_ledc
     boards
     dac
+    dac_tas58xx
     display
+    audio-resampler
+    esp_eth
 )
 
+# TODO: why these fall over in CI and fine locally...
 # Bluetooth component only needed when A2DP is enabled
-if(CONFIG_BT_A2DP_ENABLE)
+#if(CONFIG_BT_A2DP_ENABLE)
     list(APPEND DEPS bt)
-endif()
+#endif()
 
 # Ethernet component only needed when W5500 is enabled
-if(CONFIG_ETH_W5500_ENABLED)
+#if(CONFIG_ETH_W5500_ENABLED)
     list(APPEND DEPS esp_eth)
-endif()
+#endif()
 
 idf_component_register(
     SRCS ${SRC_FILES}

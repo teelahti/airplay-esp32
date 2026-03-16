@@ -134,7 +134,6 @@ static void network_monitor_task(void *pvParameters) {
         dns_running = false;
       }
     } else {
-      ESP_LOGW(TAG, "All network interfaces down");
       if (!dns_running) {
         dns_server_start(AP_IP_ADDR);
         dns_running = true;
