@@ -89,7 +89,8 @@ jobs:
           target: ${{ matrix.target }}
           command: >
             idf.py -DSDKCONFIG_DEFAULTS="${{ matrix.sdkconfig }}" build &&
-            idf.py merge-bin --format raw -o /project/airplay2-receiver-${{ matrix.name }}.bin
+            idf.py merge-bin --format raw -o merged-firmware.bin &&
+            cp build/merged-firmware.bin airplay2-receiver-${{ matrix.name }}.bin
 
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v6
