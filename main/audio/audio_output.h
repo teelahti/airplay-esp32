@@ -42,3 +42,7 @@ esp_err_t audio_output_write(const void *data, size_t bytes, TickType_t wait);
  * @param rate  Sample rate in Hz (e.g. 44100, 48000)
  */
 void audio_output_set_sample_rate(uint32_t rate);
+ * Notify the output of the source sample rate (from AirPlay ANNOUNCE).
+ * The resampler is re-initialized if the rate changes.
+ */
+void audio_output_set_source_rate(int rate);

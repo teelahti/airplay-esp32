@@ -278,13 +278,13 @@ static void tas58xx_dump_status(const char *context) {
   }
 
   if (tas58xx_read_reg(REG_DIG_VOL, &val) == ESP_OK) {
-    float db = (0x30 - (int)val) * 0.5f;
+    float db = (float)(0x30 - (int)val) * 0.5f;
     ESP_LOGD(TAG, "  DIG_VOL=0x%02X (%.1f dB%s)", val, db,
              val == DIG_VOL_MUTE ? " MUTED" : "");
   }
 
   if (tas58xx_read_reg(REG_AGAIN, &val) == ESP_OK) {
-    float again_db = -(val & 0x1F) * 0.5f;
+    float again_db = -(float)(val & 0x1F) * 0.5f;
     ESP_LOGD(TAG, "  AGAIN=0x%02X (%.1f dB)", val, again_db);
   }
 
@@ -757,34 +757,34 @@ static esp_err_t write_dsp_signal_path_defaults(void) {
   write_dsp_coeff32(0x06, 0x70, 0x00000000); /* K0_1 (no compression) */
   write_dsp_coeff32(0x06, 0x74, 0x00000000); /* K1_1 */
   write_dsp_coeff32(0x06, 0x78, 0x00000000); /* K2_1 */
-  write_dsp_coeff32(0x06, 0x7C, 0xE7000000); /* T1_1 threshold */
-  write_dsp_coeff32(0x07, 0x08, 0xFE800000); /* T2_1 threshold */
-  write_dsp_coeff32(0x07, 0x0C, 0x00000000); /* off1_1 */
-  write_dsp_coeff32(0x07, 0x10, 0x00000000); /* off2_1 */
+  write_dsp_coeff32(0x06, 0x7C, (int32_t)0xE7000000); /* T1_1 threshold */
+  write_dsp_coeff32(0x07, 0x08, (int32_t)0xFE800000); /* T2_1 threshold */
+  write_dsp_coeff32(0x07, 0x0C, 0x00000000);          /* off1_1 */
+  write_dsp_coeff32(0x07, 0x10, 0x00000000);          /* off2_1 */
   /* DRC2 time constants */
   write_dsp_coeff32(0x07, 0x14, 0x7FFFFFFF); /* DRC2 Energy  */
   write_dsp_coeff32(0x07, 0x18, 0x7FFFFFFF); /* DRC2 Attack  */
   write_dsp_coeff32(0x07, 0x1C, 0x7FFFFFFF); /* DRC2 Decay   */
   /* DRC2 slopes and thresholds */
-  write_dsp_coeff32(0x07, 0x20, 0x00000000); /* k0_2 */
-  write_dsp_coeff32(0x07, 0x24, 0x00000000); /* k1_2 */
-  write_dsp_coeff32(0x07, 0x28, 0x00000000); /* k2_2 */
-  write_dsp_coeff32(0x07, 0x2C, 0xE7000000); /* t1_2 */
-  write_dsp_coeff32(0x07, 0x30, 0xFE800000); /* t2_2 */
-  write_dsp_coeff32(0x07, 0x34, 0x00000000); /* off1_2 */
-  write_dsp_coeff32(0x07, 0x38, 0x00000000); /* off2_2 */
+  write_dsp_coeff32(0x07, 0x20, 0x00000000);          /* k0_2 */
+  write_dsp_coeff32(0x07, 0x24, 0x00000000);          /* k1_2 */
+  write_dsp_coeff32(0x07, 0x28, 0x00000000);          /* k2_2 */
+  write_dsp_coeff32(0x07, 0x2C, (int32_t)0xE7000000); /* t1_2 */
+  write_dsp_coeff32(0x07, 0x30, (int32_t)0xFE800000); /* t2_2 */
+  write_dsp_coeff32(0x07, 0x34, 0x00000000);          /* off1_2 */
+  write_dsp_coeff32(0x07, 0x38, 0x00000000);          /* off2_2 */
   /* DRC3 time constants */
   write_dsp_coeff32(0x07, 0x3C, 0x7FFFFFFF); /* DRC3 Energy  */
   write_dsp_coeff32(0x07, 0x40, 0x7FFFFFFF); /* DRC3 Attack  */
   write_dsp_coeff32(0x07, 0x44, 0x7FFFFFFF); /* DRC3 Decay   */
   /* DRC3 slopes and thresholds */
-  write_dsp_coeff32(0x07, 0x48, 0x00000000); /* k0_3 */
-  write_dsp_coeff32(0x07, 0x4C, 0x00000000); /* k1_3 */
-  write_dsp_coeff32(0x07, 0x50, 0x00000000); /* k2_3 */
-  write_dsp_coeff32(0x07, 0x54, 0xE7000000); /* t1_3 */
-  write_dsp_coeff32(0x07, 0x58, 0xFE800000); /* t2_3 */
-  write_dsp_coeff32(0x07, 0x5C, 0x00000000); /* off1_3 */
-  write_dsp_coeff32(0x07, 0x60, 0x00000000); /* off2_3 */
+  write_dsp_coeff32(0x07, 0x48, 0x00000000);          /* k0_3 */
+  write_dsp_coeff32(0x07, 0x4C, 0x00000000);          /* k1_3 */
+  write_dsp_coeff32(0x07, 0x50, 0x00000000);          /* k2_3 */
+  write_dsp_coeff32(0x07, 0x54, (int32_t)0xE7000000); /* t1_3 */
+  write_dsp_coeff32(0x07, 0x58, (int32_t)0xFE800000); /* t2_3 */
+  write_dsp_coeff32(0x07, 0x5C, 0x00000000);          /* off1_3 */
+  write_dsp_coeff32(0x07, 0x60, 0x00000000);          /* off2_3 */
 
   /* FS Clipper (Page 0x07) */
   write_dsp_coeff32(0x07, 0x64, 0x00800000); /* THD Boost (unity) */
@@ -1080,10 +1080,10 @@ esp_err_t tas58xx_eq_set_band(int band, float gain_db) {
 
   /* Clamp gain to integer dB range of pre-computed table */
   int gain_int = (int)roundf(gain_db);
-  if (gain_int > TAS58XX_EQ_MAX_GAIN_DB) {
+  if (gain_int > (int)TAS58XX_EQ_MAX_GAIN_DB) {
     gain_int = (int)TAS58XX_EQ_MAX_GAIN_DB;
   }
-  if (gain_int < TAS58XX_EQ_MIN_GAIN_DB) {
+  if (gain_int < (int)TAS58XX_EQ_MIN_GAIN_DB) {
     gain_int = (int)TAS58XX_EQ_MIN_GAIN_DB;
   }
 

@@ -37,6 +37,7 @@ set( SRC_FILES
     "network/dns_server.c"
     "led.c"
     "audio/eq_events.c"
+    "audio/audio_resample.c"
 )
 
 # Select audio output implementation at compile time
@@ -81,7 +82,9 @@ set( DEPS
     esp_driver_ledc
     boards
     dac
+    dac_tas58xx
     display
+    audio-resampler
 )
 
 # Bluetooth component only needed when A2DP is enabled
