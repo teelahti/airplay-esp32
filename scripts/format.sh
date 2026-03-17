@@ -35,6 +35,14 @@ if [ -z "$CLANG_FORMAT" ]; then
   exit 1
 fi
 
-find main components -name "*.c" -o -name "*.h" | xargs "$CLANG_FORMAT" -i
+# Submodule paths to exclude
+SUBMODULES="components/u8g2 components/u8g2-hal-esp-idf"
+
+EXCLUDE_ARGS=()
+for sm in $SUBMODULES; do
+  EXCLUDE_ARGS+=(-path "$sm" -prune -o)
+done
+
+find main components "${EXCLUDE_ARGS[@]}" \( -name "*.c" -o -name "*.h" \) -print | xargs "$CLANG_FORMAT" -i
 
 echo "Formatted all source files"
