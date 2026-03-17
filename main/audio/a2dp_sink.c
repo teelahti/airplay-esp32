@@ -98,7 +98,7 @@ static volatile bool s_audio_started = false;
 static volatile bool s_avrc_playing = false; /* AVRCP play state (instant) */
 static volatile bool s_i2s_task_running = false;
 static bool s_bt_discoverable = true;
-static uint8_t s_avrc_volume = 64; /* 0-127, AVRCP absolute volume (default 50 %) */
+static uint8_t s_avrc_volume = 64; /* 0-127, AVRCP absolute volume */
 
 static RingbufHandle_t s_ringbuf = NULL;
 static SemaphoreHandle_t s_i2s_sem = NULL;

@@ -578,7 +578,7 @@ esp_err_t web_server_start(uint16_t port) {
   config.max_open_sockets = 2;   // BT: tighter socket budget (LWIP 12)
   config.send_wait_timeout = 10; // BT/WiFi coexistence slows TCP drain
 #else
-  config.max_open_sockets = 3;   // Limit to save lwIP socket slots for AirPlay
+  config.max_open_sockets = 3; // Limit to save lwIP socket slots for AirPlay
 #endif
   config.lru_purge_enable = true; // Reclaim stale sockets when all are in use
   config.max_uri_handlers = 20;   // Room for captive portal + EQ handlers
