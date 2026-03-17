@@ -5,7 +5,7 @@
  */
 
 #include "dac_tas57xx.h"
-#include "board_common.h"
+#include "board_utils.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>

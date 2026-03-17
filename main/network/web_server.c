@@ -529,10 +529,12 @@ static esp_err_t eq_post_handler(httpd_req_t *req) {
       cJSON *item = cJSON_GetArrayItem(gains_arr, i);
       gains[i] = cJSON_IsNumber(item) ? (float)item->valuedouble : 0.0f;
       /* Clamp */
-      if (gains[i] > 15.0f)
+      if (gains[i] > 15.0f) {
         gains[i] = 15.0f;
-      if (gains[i] < -15.0f)
+      }
+      if (gains[i] < -15.0f) {
         gains[i] = -15.0f;
+      }
     }
 
     /* Emit event — listeners (settings + DAC) will handle it */

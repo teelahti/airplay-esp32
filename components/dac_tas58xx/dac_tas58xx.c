@@ -6,7 +6,7 @@
 
 #include "dac_tas58xx.h"
 #include "dac_tas58xx_eq.h"
-#include "board_common.h"
+#include "board_utils.h"
 #include <math.h>
 #include <string.h>
 #include <sys/param.h>
