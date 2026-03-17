@@ -5,15 +5,14 @@
  */
 
 #include "dac_tas57xx.h"
+#include "board_common.h"
 #include <math.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/param.h>
 
 #include "driver/i2s_std.h"
 #include "driver/i2c_master.h"
-#include "driver/i2c_types.h"
 #include "esp_log.h"
 
 #define TAS575x (0x98 >> 1)
@@ -78,15 +77,6 @@ static i2c_master_dev_handle_t tas57xx_device_handle;
 static esp_err_t write_cmd(tas57xx_cmd_e cmd, ...);
 static int tas57xx_detect(i2c_master_bus_handle_t s_bus_handle);
 
-// I2C functions
-static esp_err_t i2c_bus_write(i2c_master_dev_handle_t dev, uint8_t addr,
-                               uint8_t reg, const uint8_t *data, size_t len);
-static esp_err_t i2c_bus_read(i2c_master_dev_handle_t dev, uint8_t reg,
-                              uint8_t *data, size_t len);
-static esp_err_t i2c_bus_add_device(uint8_t addr,
-                                    i2c_master_dev_handle_t *dev_handle);
-static esp_err_t i2c_bus_remove_device(i2c_master_dev_handle_t dev_handle);
-
 /**
  * Write a hybrid flow configuration byte stream to the DAC.
  * Format: [reg, len, data[0..len-1], ...] terminated by 0xFF, 0xFF.
@@ -99,7 +89,7 @@ static esp_err_t tas57xx_write_hf(const uint8_t *stream) {
     uint8_t reg = stream[pos];
     uint8_t len = stream[pos + 1];
     const uint8_t *data = &stream[pos + 2];
-    err = i2c_bus_write(tas57xx_device_handle, tas57xx_addr, reg, data, len);
+    err = board_i2c_write(tas57xx_device_handle, reg, data, len);
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "HF write failed at offset %d (reg 0x%02X): %s", pos, reg,
                esp_err_to_name(err));
@@ -127,7 +117,8 @@ static esp_err_t tas57xx_init(void *i2c_bus) {
     return ESP_ERR_NOT_FOUND;
   }
 
-  err = i2c_bus_add_device(tas57xx_addr, &tas57xx_device_handle);
+  err = board_i2c_add_device(s_bus_handle, tas57xx_addr, I2C_LINE_SPEED,
+                             &tas57xx_device_handle);
   if (ESP_OK != err) {
     ESP_LOGE(TAG, "Could not add device to bus: %s", esp_err_to_name(err));
     return err;
@@ -136,10 +127,10 @@ static esp_err_t tas57xx_init(void *i2c_bus) {
   // Read chip identity for feature availability
   if (tas57xx_addr == TAS578x) {
     uint8_t page = 0x00;
-    i2c_bus_write(tas57xx_device_handle, tas57xx_addr, 0x00, &page, 1);
+    board_i2c_write(tas57xx_device_handle, 0x00, &page, 1);
     uint8_t device_id = 0;
-    if (i2c_bus_read(tas57xx_device_handle, TAS578x_REG_DEVICE_ID, &device_id,
-                     1) == ESP_OK) {
+    if (board_i2c_read(tas57xx_device_handle, TAS578x_REG_DEVICE_ID, &device_id,
+                       1) == ESP_OK) {
       ESP_LOGI(TAG, "TAS578x device ID: 0x%02X", device_id);
     }
   } else if (tas57xx_addr == TAS575x) {
@@ -173,9 +164,8 @@ static esp_err_t tas57xx_init(void *i2c_bus) {
 
   // Apply additional init registers
   for (int i = 0; tas57xx_init_seq[i].reg != 0xff; i++) {
-    err = i2c_bus_write(tas57xx_device_handle, tas57xx_addr,
-                        tas57xx_init_seq[i].reg, &tas57xx_init_seq[i].value,
-                        sizeof(uint8_t));
+    err = board_i2c_write(tas57xx_device_handle, tas57xx_init_seq[i].reg,
+                          &tas57xx_init_seq[i].value, sizeof(uint8_t));
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "Failed to write init reg 0x%02x: %s",
                tas57xx_init_seq[i].reg, esp_err_to_name(err));
@@ -190,7 +180,7 @@ static esp_err_t tas57xx_deinit(void) {
   esp_err_t err = ESP_OK;
 
   if (tas57xx_device_handle) {
-    err = i2c_bus_remove_device(tas57xx_device_handle);
+    err = board_i2c_remove_device(tas57xx_device_handle);
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "failed to remove from i2c bus, err: %s",
                esp_err_to_name(err));
@@ -299,13 +289,12 @@ static esp_err_t write_cmd(tas57xx_cmd_e cmd, ...) {
   case TAS57XX_SET_VOLUME_A_L:
   case TAS57XX_SET_VOLUME_B_R:
     uint8_t val = (uint8_t)va_arg(args, int);
-    err = i2c_bus_write(tas57xx_device_handle, tas57xx_addr,
-                        tas57xx_cmd[cmd].reg, &val, sizeof(uint8_t));
+    err = board_i2c_write(tas57xx_device_handle, tas57xx_cmd[cmd].reg, &val,
+                          sizeof(uint8_t));
     break;
   default:
-    err =
-        i2c_bus_write(tas57xx_device_handle, tas57xx_addr, tas57xx_cmd[cmd].reg,
-                      &(tas57xx_cmd[cmd].value), sizeof(uint8_t));
+    err = board_i2c_write(tas57xx_device_handle, tas57xx_cmd[cmd].reg,
+                          &(tas57xx_cmd[cmd].value), sizeof(uint8_t));
   }
 
   if (err != ESP_OK) {
@@ -334,66 +323,4 @@ static int tas57xx_detect(i2c_master_bus_handle_t s_bus_handle) {
     }
   }
   return 0;
-}
-
-////////////////////////  I2C Bus ///////////////////////
-
-static esp_err_t i2c_bus_add_device(uint8_t addr,
-                                    i2c_master_dev_handle_t *dev_handle) {
-  if (s_bus_handle == NULL) {
-    return ESP_ERR_INVALID_STATE;
-  }
-  i2c_device_config_t dev_cfg = {.dev_addr_length = I2C_ADDR_BIT_LEN_7,
-                                 .device_address = addr,
-                                 .scl_speed_hz = I2C_LINE_SPEED};
-
-  return i2c_master_bus_add_device(s_bus_handle, &dev_cfg, dev_handle);
-}
-
-static esp_err_t i2c_bus_remove_device(i2c_master_dev_handle_t dev_handle) {
-  return i2c_master_bus_rm_device(dev_handle);
-}
-
-/**
- * Read data from an I2C device register
- */
-static esp_err_t i2c_bus_read(i2c_master_dev_handle_t dev, uint8_t reg,
-                              uint8_t *data, size_t len) {
-  if (dev == NULL) {
-    return ESP_ERR_INVALID_STATE;
-  }
-  return i2c_master_transmit_receive(dev, &reg, 1, data, len, I2C_TIMEOUT);
-}
-
-/**
- * Write data to an I2C device
- */
-static esp_err_t i2c_bus_write(i2c_master_dev_handle_t dev, uint8_t addr,
-                               uint8_t reg, const uint8_t *data, size_t len) {
-  if (dev == NULL) {
-    return ESP_ERR_INVALID_STATE;
-  }
-  esp_err_t ret = ESP_OK;
-
-  if (reg == 0xFF) {
-    // No register, write data directly
-    ret = i2c_master_transmit(dev, data, len, I2C_TIMEOUT);
-  } else {
-    // Allocate buffer for reg + data
-    uint8_t *buf = malloc(len + 1);
-    if (buf == NULL) {
-      return ESP_ERR_NO_MEM;
-    }
-
-    buf[0] = reg;
-    memcpy(buf + 1, data, len);
-
-    ret = i2c_master_transmit(dev, buf, len + 1, I2C_TIMEOUT);
-    free(buf);
-  }
-
-  if (ret != ESP_OK) {
-    ESP_LOGD(TAG, "I2C write to 0x%02x failed: %s", addr, esp_err_to_name(ret));
-  }
-  return ret;
 }

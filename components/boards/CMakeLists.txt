@@ -12,5 +12,6 @@ endif()
 idf_component_register(
     SRC_DIRS "${boards_dir}" "."
     INCLUDE_DIRS "${boards_dir}" "."
+    REQUIRES esp_driver_i2c
     PRIV_REQUIRES ${PRIV_REQUIRES}
 )

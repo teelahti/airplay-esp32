@@ -6,12 +6,12 @@
 
 #include "dac_tas58xx.h"
 #include "dac_tas58xx_eq.h"
+#include "board_common.h"
 #include <math.h>
 #include <string.h>
 #include <sys/param.h>
 
 #include "driver/i2c_master.h"
-#include "driver/i2c_types.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -169,14 +169,6 @@ static SemaphoreHandle_t s_reg_mutex = NULL;
 #define REG_UNLOCK() xSemaphoreGive(s_reg_mutex)
 
 /* ---------- Forward declarations ---------- */
-static esp_err_t i2c_bus_write(i2c_master_dev_handle_t dev, uint8_t addr,
-                               uint8_t reg, const uint8_t *data, size_t len);
-static esp_err_t i2c_bus_read(i2c_master_dev_handle_t dev, uint8_t addr,
-                              uint8_t reg, uint8_t *data, size_t len);
-static esp_err_t i2c_bus_add_device(uint8_t addr,
-                                    i2c_master_dev_handle_t *dev_handle);
-static esp_err_t i2c_bus_remove_device(i2c_master_dev_handle_t dev_handle);
-
 static esp_err_t tas58xx_write_reg(uint8_t reg, uint8_t value);
 static esp_err_t tas58xx_read_reg(uint8_t reg, uint8_t *value);
 
@@ -341,7 +333,8 @@ static esp_err_t tas58xx_init(void *i2c_bus) {
     return ESP_ERR_NOT_FOUND;
   }
 
-  err = i2c_bus_add_device(tas58xx_addr, &tas58xx_device_handle);
+  err = board_i2c_add_device(s_bus_handle, tas58xx_addr, I2C_LINE_SPEED,
+                             &tas58xx_device_handle);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Could not add device to I2C bus: %s", esp_err_to_name(err));
     return err;
@@ -401,7 +394,7 @@ static esp_err_t tas58xx_deinit(void) {
   tas58xx_write_reg(REG_DEVICE_CTRL2, CTRL2_DEEP_SLEEP);
 
   if (tas58xx_device_handle) {
-    err = i2c_bus_remove_device(tas58xx_device_handle);
+    err = board_i2c_remove_device(tas58xx_device_handle);
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "Failed to remove from I2C bus: %s", esp_err_to_name(err));
     }
@@ -607,13 +600,11 @@ const dac_ops_t dac_tas58xx_ops = {
 /* ---------- Register read/write helpers ---------- */
 
 static esp_err_t tas58xx_write_reg(uint8_t reg, uint8_t value) {
-  return i2c_bus_write(tas58xx_device_handle, tas58xx_addr, reg, &value,
-                       sizeof(uint8_t));
+  return board_i2c_write(tas58xx_device_handle, reg, &value, sizeof(uint8_t));
 }
 
 static esp_err_t tas58xx_read_reg(uint8_t reg, uint8_t *value) {
-  return i2c_bus_read(tas58xx_device_handle, tas58xx_addr, reg, value,
-                      sizeof(uint8_t));
+  return board_i2c_read(tas58xx_device_handle, reg, value, sizeof(uint8_t));
 }
 
 /* ==================  15-Band Parametric EQ  ================== */
@@ -691,8 +682,7 @@ static esp_err_t write_biquad_coeff(uint8_t page, uint8_t reg_start,
     buf[i * 4 + 3] = (uint8_t)((coeff[i]) & 0xFF);
   }
 
-  return i2c_bus_write(tas58xx_device_handle, tas58xx_addr, reg_start, buf,
-                       BQ_COEFF_SIZE);
+  return board_i2c_write(tas58xx_device_handle, reg_start, buf, BQ_COEFF_SIZE);
 }
 
 /**
@@ -708,8 +698,7 @@ static esp_err_t write_biquad_raw(uint8_t page, uint8_t sub_addr,
     return err;
   }
 
-  return i2c_bus_write(tas58xx_device_handle, tas58xx_addr, sub_addr, data,
-                       EQ_COEFF_BYTES);
+  return board_i2c_write(tas58xx_device_handle, sub_addr, data, EQ_COEFF_BYTES);
 }
 
 static esp_err_t write_dsp_coeff32(uint8_t page, uint8_t reg, int32_t val) {
@@ -719,7 +708,7 @@ static esp_err_t write_dsp_coeff32(uint8_t page, uint8_t reg, int32_t val) {
   }
   uint8_t buf[4] = {(uint8_t)(val >> 24), (uint8_t)(val >> 16),
                     (uint8_t)(val >> 8), (uint8_t)(val)};
-  return i2c_bus_write(tas58xx_device_handle, tas58xx_addr, reg, buf, 4);
+  return board_i2c_write(tas58xx_device_handle, reg, buf, 4);
 }
 
 /**
@@ -1043,8 +1032,8 @@ static esp_err_t write_eq_mode(bool enable) {
       0x00, 0x00, 0x00, enable ? 0x00 : 0x01, /* bypass_eq */
   };
 
-  err = i2c_bus_write(tas58xx_device_handle, tas58xx_addr, EQ_MODE_REG,
-                      mode_data, EQ_MODE_SIZE);
+  err = board_i2c_write(tas58xx_device_handle, EQ_MODE_REG, mode_data,
+                        EQ_MODE_SIZE);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "EQ: mode write failed: %s", esp_err_to_name(err));
   } else {
@@ -1175,57 +1164,4 @@ float tas58xx_eq_get_center_freq(int band) {
     return 0.0f;
   }
   return eq_center_freq[band];
-}
-
-/* =====================  I2C Bus  ===================== */
-static esp_err_t i2c_bus_add_device(uint8_t addr,
-                                    i2c_master_dev_handle_t *dev_handle) {
-  if (s_bus_handle == NULL) {
-    return ESP_ERR_INVALID_STATE;
-  }
-  i2c_device_config_t dev_cfg = {
-      .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-      .device_address = addr,
-      .scl_speed_hz = I2C_LINE_SPEED,
-  };
-
-  return i2c_master_bus_add_device(s_bus_handle, &dev_cfg, dev_handle);
-}
-
-static esp_err_t i2c_bus_remove_device(i2c_master_dev_handle_t dev_handle) {
-  return i2c_master_bus_rm_device(dev_handle);
-}
-
-static esp_err_t i2c_bus_write(i2c_master_dev_handle_t dev, uint8_t addr,
-                               uint8_t reg, const uint8_t *data, size_t len) {
-  (void)addr;
-  if (dev == NULL) {
-    return ESP_ERR_INVALID_STATE;
-  }
-
-  /* Max payload is BQ_COEFF_SIZE (20) bytes; +1 for the register byte. */
-  static uint8_t buf[BQ_COEFF_SIZE + 1];
-  if (len > BQ_COEFF_SIZE) {
-    return ESP_ERR_INVALID_SIZE;
-  }
-
-  buf[0] = reg;
-  memcpy(buf + 1, data, len);
-
-  esp_err_t ret = i2c_master_transmit(dev, buf, len + 1, I2C_TIMEOUT);
-
-  if (ret != ESP_OK) {
-    ESP_LOGD(TAG, "I2C write reg 0x%02X failed: %s", reg, esp_err_to_name(ret));
-  }
-  return ret;
-}
-
-static esp_err_t i2c_bus_read(i2c_master_dev_handle_t dev, uint8_t addr,
-                              uint8_t reg, uint8_t *data, size_t len) {
-  (void)addr;
-  if (dev == NULL) {
-    return ESP_ERR_INVALID_STATE;
-  }
-
-  return i2c_master_transmit_receive(dev, &reg, 1, data, len, I2C_TIMEOUT);
 }
