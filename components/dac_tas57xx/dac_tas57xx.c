@@ -14,6 +14,8 @@
 #include "driver/i2s_std.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #define TAS575x (0x98 >> 1)
 #define TAS578x (0x90 >> 1)
@@ -73,6 +75,9 @@ static const struct tas57xx_cmd_s tas57xx_cmd[] = {
 static uint8_t tas57xx_addr;
 static i2c_master_bus_handle_t s_bus_handle = NULL;
 static i2c_master_dev_handle_t tas57xx_device_handle;
+static dac_power_mode_t s_power_state = DAC_POWER_OFF;
+static uint8_t *s_hf_buf = NULL; // Cached hybrid flow (TAS5754M only)
+static long s_hf_size = 0;
 
 static esp_err_t write_cmd(tas57xx_cmd_e cmd, ...);
 static int tas57xx_detect(i2c_master_bus_handle_t s_bus_handle);
@@ -97,7 +102,7 @@ static esp_err_t tas57xx_write_hf(const uint8_t *stream) {
     }
     pos += 2 + len;
   }
-  ESP_LOGI(TAG, "Hybrid flow configuration applied");
+  ESP_LOGI(TAG, "HybridFlow loaded");
   return ESP_OK;
 }
 
@@ -137,7 +142,7 @@ static esp_err_t tas57xx_init(void *i2c_bus) {
     ESP_LOGI(TAG, "TAS575x detected (no device ID register)");
   }
 
-  // Load hybrid flow from SPIFFS for TAS575x (TAS5754M with miniDSP)
+  // Load and cache hybrid flow from SPIFFS for TAS575x (TAS5754M with miniDSP)
   static const char *hf_path = "/spiffs/hf/tas57xx_fw.bin";
   if (tas57xx_addr == TAS575x) {
     FILE *f = fopen(hf_path, "rb");
@@ -147,12 +152,14 @@ static esp_err_t tas57xx_init(void *i2c_bus) {
       fseek(f, 0, SEEK_SET);
       uint8_t *buf = malloc(size);
       if (buf && fread(buf, 1, size, f) == (size_t)size) {
-        err = tas57xx_write_hf(buf);
+        s_hf_buf = buf;
+        s_hf_size = size;
+        err = tas57xx_write_hf(s_hf_buf);
       } else {
         ESP_LOGE(TAG, "Failed to read HF file %s", hf_path);
+        free(buf);
         err = ESP_ERR_NO_MEM;
       }
-      free(buf);
       fclose(f);
       if (err != ESP_OK) {
         return err;
@@ -189,27 +196,26 @@ static esp_err_t tas57xx_deinit(void) {
   }
 
   s_bus_handle = NULL;
+  free(s_hf_buf);
+  s_hf_buf = NULL;
+  s_hf_size = 0;
   return err;
 }
 
-static void tas57xx_set_power_mode(dac_power_mode_t mode) {
-  switch (mode) {
-  case DAC_POWER_STANDBY:
-    write_cmd(TAS57XX_MUTE);
-    write_cmd(TAS57XX_STANDBY);
-    break;
-  case DAC_POWER_ON:
-    write_cmd(TAS57XX_MUTE);
-    write_cmd(TAS57XX_ACTIVE);
-    write_cmd(TAS57XX_UNMUTE);
-    break;
-  case DAC_POWER_OFF:
-    write_cmd(TAS57XX_MUTE);
-    write_cmd(TAS57XX_DOWN);
-    break;
-  default:
-    ESP_LOGW(TAG, "Unhandled power mode");
-    break;
+/**
+ * Re-apply HF config and init registers after a full shutdown.
+ * Shutdown (reg 0x02=0x01) loses miniDSP RAM contents.
+ */
+static void tas57xx_restore_config(void) {
+  if (s_hf_buf) {
+    esp_err_t err = tas57xx_write_hf(s_hf_buf);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "Failed to restore HF config: %s", esp_err_to_name(err));
+    }
+  }
+  for (int i = 0; tas57xx_init_seq[i].reg != 0xff; i++) {
+    board_i2c_write(tas57xx_device_handle, tas57xx_init_seq[i].reg,
+                    &tas57xx_init_seq[i].value, sizeof(uint8_t));
   }
 }
 
@@ -219,6 +225,35 @@ static void tas57xx_enable_speaker(bool enable) {
   } else {
     write_cmd(TAS57XX_ANALOGUE_OFF);
   }
+}
+
+static void tas57xx_set_power_mode(dac_power_mode_t mode) {
+  tas57xx_enable_speaker(false);
+  switch (mode) {
+  case DAC_POWER_STANDBY:
+    write_cmd(TAS57XX_MUTE);
+    write_cmd(TAS57XX_STANDBY);
+    if (s_power_state == DAC_POWER_OFF) {
+      tas57xx_restore_config();
+    }
+    break;
+  case DAC_POWER_ON:
+    write_cmd(TAS57XX_MUTE);
+    write_cmd(TAS57XX_ACTIVE);
+    // Allow PLL lock and charge pump settling before unmuting
+    vTaskDelay(pdMS_TO_TICKS(50));
+    write_cmd(TAS57XX_UNMUTE);
+    tas57xx_enable_speaker(true);
+    break;
+  case DAC_POWER_OFF:
+    write_cmd(TAS57XX_MUTE);
+    write_cmd(TAS57XX_DOWN);
+    break;
+  default:
+    ESP_LOGW(TAG, "Unhandled power mode");
+    break;
+  }
+  s_power_state = mode;
 }
 
 static void tas57xx_enable_line_out(bool enable) {
