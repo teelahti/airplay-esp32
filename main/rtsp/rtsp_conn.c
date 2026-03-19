@@ -44,6 +44,9 @@ void rtsp_conn_free(rtsp_conn_t *conn) {
     return;
   }
 
+  // Persist volume at disconnect
+  settings_persist_volume();
+
   // Cleanup any resources
   rtsp_conn_cleanup(conn);
 
@@ -106,9 +109,6 @@ void rtsp_conn_cleanup(rtsp_conn_t *conn) {
 
   // Reset encryption state
   conn->encrypted_mode = false;
-
-  // Persist volume to NVS once at disconnect
-  settings_persist_volume();
 }
 
 void rtsp_conn_set_volume(rtsp_conn_t *conn, float volume_db) {
