@@ -3,7 +3,8 @@
  *
  * Works with both AirPlay 1 and AirPlay 2. The client's DACP service
  * is discovered via mDNS using the DACP-ID from the RTSP handshake.
- * Commands are fire-and-forget HTTP GETs.
+ * Commands are fire-and-forget HTTP GETs dispatched on a dedicated
+ * worker task so callers (button task) never block on network I/O.
  *
  * Thread safety: dacp_set_session/clear may be called from the RTSP
  * server task while dacp_send_* are called from the button task.
@@ -17,6 +18,7 @@
 #include "mdns.h"
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 
 #include <stdio.h>
@@ -27,9 +29,13 @@ static const char *TAG = "dacp";
 
 #define DACP_ID_MAX         32
 #define ACTIVE_REMOTE_MAX   32
-#define MDNS_TIMEOUT_MS     3000
-#define MDNS_RETRY_COUNT    2
+#define MDNS_TIMEOUT_MS     1500
+#define MDNS_RETRY_COUNT    1
 #define MDNS_RETRY_DELAY_MS 500
+#define CMD_PATH_MAX        80
+#define CMD_QUEUE_LEN       4
+#define HTTP_TIMEOUT_MS     800
+#define WORKER_STACK        4096
 
 static SemaphoreHandle_t s_mutex;
 static bool s_initialized;
@@ -38,6 +44,14 @@ static char s_active_remote[ACTIVE_REMOTE_MAX];
 static uint32_t s_client_ip;
 static uint16_t s_dacp_port; // Discovered via mDNS
 static bool s_session_valid;
+static bool
+    s_discovery_failed; // True if mDNS discovery failed for this session
+static QueueHandle_t s_cmd_queue;
+static TaskHandle_t s_worker_handle;
+
+// Special sentinel posted to the command queue to trigger mDNS discovery
+// on the worker task (avoids spawning a new task per session).
+static const char CMD_DISCOVER[] = "\x01";
 
 // Discover the DACP port via mDNS. Called WITHOUT the mutex held since
 // mDNS queries can block for several seconds. Copies the DACP-ID under
@@ -46,8 +60,12 @@ static void discover_dacp_port(void) {
   char dacp_id_local[DACP_ID_MAX];
 
   xSemaphoreTake(s_mutex, portMAX_DELAY);
+  // Skip if port is already known or discovery already failed
+  if (s_dacp_port != 0 || s_discovery_failed) {
+    xSemaphoreGive(s_mutex);
+    return;
+  }
   strlcpy(dacp_id_local, s_dacp_id, sizeof(dacp_id_local));
-  s_dacp_port = 0;
   xSemaphoreGive(s_mutex);
 
   if (dacp_id_local[0] == '\0') {
@@ -97,6 +115,9 @@ static void discover_dacp_port(void) {
   // Store discovered port under the lock
   xSemaphoreTake(s_mutex, portMAX_DELAY);
   s_dacp_port = found_port;
+  if (found_port == 0) {
+    s_discovery_failed = true;
+  }
   xSemaphoreGive(s_mutex);
 
   if (found_port == 0) {
@@ -105,7 +126,8 @@ static void discover_dacp_port(void) {
   }
 }
 
-static void send_dacp_request(const char *path) {
+// Execute a DACP HTTP request synchronously. Only called from the worker task.
+static void execute_dacp_request(const char *path) {
   if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
     ESP_LOGW(TAG, "DACP mutex timeout for '%s'", path);
     return;
@@ -118,26 +140,18 @@ static void send_dacp_request(const char *path) {
   }
 
   // Copy session state under the lock, then release before any I/O
-  char dacp_id_copy[DACP_ID_MAX];
   char active_remote_copy[ACTIVE_REMOTE_MAX];
   uint32_t client_ip_copy = s_client_ip;
   uint16_t port_copy = s_dacp_port;
-  strlcpy(dacp_id_copy, s_dacp_id, sizeof(dacp_id_copy));
   strlcpy(active_remote_copy, s_active_remote, sizeof(active_remote_copy));
 
   xSemaphoreGive(s_mutex);
 
-  // Lazy discover port on first command (outside lock — mDNS can take seconds)
+  // If port not yet discovered, skip — the eager discovery task will
+  // populate it. Never block the worker on mDNS.
   if (port_copy == 0) {
-    // discover_dacp_port reads s_dacp_id — safe because button task is the
-    // only caller of send_dacp_request and the ID doesn't change mid-session.
-    discover_dacp_port();
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    port_copy = s_dacp_port;
-    xSemaphoreGive(s_mutex);
-    if (port_copy == 0) {
-      return;
-    }
+    ESP_LOGD(TAG, "DACP: port not ready, skipping '%s'", path);
+    return;
   }
 
   // Build URL: http://<ip>:<port>/ctrl-int/1/<path>
@@ -149,7 +163,7 @@ static void send_dacp_request(const char *path) {
   // Fire-and-forget HTTP GET
   esp_http_client_config_t config = {
       .url = url,
-      .timeout_ms = 2000,
+      .timeout_ms = HTTP_TIMEOUT_MS,
       .disable_auto_redirect = true,
   };
 
@@ -180,6 +194,36 @@ static void send_dacp_request(const char *path) {
   esp_http_client_cleanup(client);
 }
 
+// Worker task: drains the command queue and executes HTTP requests.
+// A sentinel command (CMD_DISCOVER) triggers mDNS discovery inline,
+// serialising discovery with HTTP commands and avoiding extra tasks.
+static void dacp_worker_task(void *pvParameters) {
+  (void)pvParameters;
+  char path[CMD_PATH_MAX];
+  while (1) {
+    if (xQueueReceive(s_cmd_queue, path, portMAX_DELAY) == pdTRUE) {
+      if (path[0] == CMD_DISCOVER[0]) {
+        discover_dacp_port();
+      } else {
+        execute_dacp_request(path);
+      }
+    }
+  }
+}
+
+// Enqueue a command for the worker task. Returns immediately (non-blocking).
+static void send_dacp_request(const char *path) {
+  if (!s_cmd_queue) {
+    return;
+  }
+  char buf[CMD_PATH_MAX];
+  strlcpy(buf, path, sizeof(buf));
+  // Non-blocking: drop if queue is full (better than blocking caller)
+  if (xQueueSend(s_cmd_queue, buf, 0) != pdTRUE) {
+    ESP_LOGD(TAG, "DACP queue full, dropping '%s'", path);
+  }
+}
+
 // ============================================================================
 // Public API
 // ============================================================================
@@ -189,6 +233,9 @@ void dacp_init(void) {
     return;
   }
   s_mutex = xSemaphoreCreateMutex();
+  s_cmd_queue = xQueueCreate(CMD_QUEUE_LEN, CMD_PATH_MAX);
+  xTaskCreate(dacp_worker_task, "dacp_wk", WORKER_STACK, NULL, 4,
+              &s_worker_handle);
   s_initialized = true;
   ESP_LOGI(TAG, "DACP client initialized");
 }
@@ -197,17 +244,37 @@ void dacp_set_session(const char *dacp_id, const char *active_remote,
                       uint32_t client_ip) {
   xSemaphoreTake(s_mutex, portMAX_DELAY);
 
-  strlcpy(s_dacp_id, dacp_id ? dacp_id : "", sizeof(s_dacp_id));
-  strlcpy(s_active_remote, active_remote ? active_remote : "",
-          sizeof(s_active_remote));
+  const char *id = dacp_id ? dacp_id : "";
+  const char *remote = active_remote ? active_remote : "";
+
+  // If same DACP-ID, just update the active-remote token and IP in place.
+  // No need to re-discover — the port doesn't change within a session.
+  bool same_session = (strcmp(s_dacp_id, id) == 0 && s_session_valid);
+  if (same_session) {
+    strlcpy(s_active_remote, remote, sizeof(s_active_remote));
+    s_client_ip = client_ip;
+    xSemaphoreGive(s_mutex);
+    return;
+  }
+
+  // New session — reset everything
+  strlcpy(s_dacp_id, id, sizeof(s_dacp_id));
+  strlcpy(s_active_remote, remote, sizeof(s_active_remote));
   s_client_ip = client_ip;
-  s_dacp_port = 0; // Will be discovered on first use
+  s_dacp_port = 0;
+  s_discovery_failed = false;
   s_session_valid = (s_dacp_id[0] != '\0' && s_active_remote[0] != '\0');
+  bool valid = s_session_valid;
 
   xSemaphoreGive(s_mutex);
 
-  if (s_session_valid) {
-    ESP_LOGD(TAG, "DACP session: id=%s remote=%s", s_dacp_id, s_active_remote);
+  if (valid) {
+    ESP_LOGI(TAG, "DACP session: id=%s", id);
+    // Kick off discovery on the worker task so the port is ready before
+    // the user presses a button.  Posting to front so it runs before any
+    // queued commands; non-blocking drop is fine if queue is full.
+    char sentinel[CMD_PATH_MAX] = {CMD_DISCOVER[0]};
+    xQueueSendToFront(s_cmd_queue, sentinel, 0);
   }
 }
 
@@ -221,6 +288,7 @@ void dacp_clear_session(void) {
   s_active_remote[0] = '\0';
   s_dacp_port = 0;
   s_session_valid = false;
+  s_discovery_failed = false;
   xSemaphoreGive(s_mutex);
 
   ESP_LOGD(TAG, "DACP session cleared");
