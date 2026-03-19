@@ -96,11 +96,11 @@ static void airplay_adjust_volume(float step_db) {
     dac_set_volume(new_db);
   }
 
-  // Notify AirPlay client via DACP
-  dacp_send_volume(db_to_dacp_percent(new_db));
-
   ESP_LOGI(TAG, "AirPlay volume: %.1f -> %.1f dB%s", current_db, new_db,
            s_muted ? " (muted)" : "");
+
+  // Notify AirPlay client via DACP (best-effort, don't block local action)
+  dacp_send_volume(db_to_dacp_percent(new_db));
 }
 
 // ============================================================================
@@ -113,6 +113,10 @@ void playback_control_play_pause(void) {
     if (dacp_is_active()) {
       // Tell the source to toggle playback — it will FLUSH the stream
       // on pause and RECORD on resume, so we don't need local muting.
+      // Signal the v1 grace period loop (if active) so it sends the
+      // DACP command at the right time and keeps waiting for reconnect.
+      // If not in a grace period, the flag is harmless.
+      rtsp_server_request_resume();
       dacp_send_playpause();
       ESP_LOGI(TAG, "AirPlay play/pause sent via DACP");
     } else {
@@ -140,7 +144,7 @@ void playback_control_play_pause(void) {
     break;
 #endif
   default:
-    ESP_LOGD(TAG, "Play/pause: no active source");
+    ESP_LOGI(TAG, "Play/pause: no active source (source=%d)", s_source);
     break;
   }
 }
