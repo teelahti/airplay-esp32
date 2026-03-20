@@ -344,6 +344,10 @@ cleanup:
   if (!slot->is_old) {
     ptp_clock_init(); // Restart PTP (stopped during v1 SETUP to free sockets)
     rtsp_stop_event_port_task();
+  } else if (rtsp_event_port_listen_socket() >= 0 &&
+             rtsp_event_port_listen_socket() == conn->event_socket) {
+    // Old task still using our socket — stop it before closing
+    rtsp_stop_event_port_task();
   }
 
   if (conn->event_socket >= 0) {

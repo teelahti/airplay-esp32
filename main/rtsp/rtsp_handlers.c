@@ -235,7 +235,7 @@ static void event_port_task(void *pvParameters) {
 
 void rtsp_start_event_port_task(int listen_socket) {
   if (event_task_handle != NULL) {
-    return;
+    rtsp_stop_event_port_task();
   }
   event_task_should_stop = false;
   event_listen_socket = -1;
@@ -243,6 +243,8 @@ void rtsp_start_event_port_task(int listen_socket) {
       event_port_task, "event_port", EVENT_STACK_SIZE / sizeof(StackType_t),
       (void *)(intptr_t)listen_socket, 5, s_event_stack, &s_event_tcb);
 }
+
+int rtsp_event_port_listen_socket(void) { return event_listen_socket; }
 
 void rtsp_stop_event_port_task(void) {
   if (event_task_handle == NULL) {
