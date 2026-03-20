@@ -244,7 +244,9 @@ void rtsp_start_event_port_task(int listen_socket) {
       (void *)(intptr_t)listen_socket, 5, s_event_stack, &s_event_tcb);
 }
 
-int rtsp_event_port_listen_socket(void) { return event_listen_socket; }
+int rtsp_event_port_listen_socket(void) {
+  return event_listen_socket;
+}
 
 void rtsp_stop_event_port_task(void) {
   if (event_task_handle == NULL) {
