@@ -227,11 +227,15 @@ static void ui_update(void)
             }
 
             // Time string: "m:ss / m:ss"
-            char pos_str[12], dur_str[12], time_buf[32];
-            format_time(pos, pos_str, sizeof(pos_str));
-            format_time(s_display.duration_secs, dur_str, sizeof(dur_str));
-            snprintf(time_buf, sizeof(time_buf), "%s / %s", pos_str, dur_str);
-            lv_label_set_text(s_label_time, time_buf);
+            if (s_display.duration_secs > 0) {
+                char pos_str[12], dur_str[12], time_buf[32];
+                format_time(pos, pos_str, sizeof(pos_str));
+                format_time(s_display.duration_secs, dur_str, sizeof(dur_str));
+                snprintf(time_buf, sizeof(time_buf), "%s / %s", pos_str, dur_str);
+                lv_label_set_text(s_label_time, time_buf);
+            } else {
+                lv_label_set_text(s_label_time, "");
+            }
             break;
         }
     }
@@ -297,7 +301,8 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
                            METADATA_STRING_MAX);
                 if (data->metadata.duration_secs)
                     s_display.duration_secs = data->metadata.duration_secs;
-                s_display.position_secs = data->metadata.position_secs;
+                if (data->metadata.position_secs || s_display.position_secs == 0)
+                    s_display.position_secs = data->metadata.position_secs;
                 s_display.sync_time_us  = esp_timer_get_time();
                 s_display.dirty = true;
             }
@@ -378,7 +383,7 @@ void display_init(void)
         .lcd_cmd_bits      = 8,
         .lcd_param_bits    = 8,
         .spi_mode          = 0,
-        .trans_queue_depth = 10,
+        .trans_queue_depth = 4,
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(
         (esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io_handle));
