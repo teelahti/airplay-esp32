@@ -39,14 +39,16 @@ static const char *TAG = "display_st7789";
 // Hardware configuration
 // ============================================================================
 
+// Physical panel is 170x320 in portrait orientation.
+// We render in landscape (320x170) so LVGL width/height are swapped
+// relative to the panel native orientation.
 #define DISPLAY_WIDTH        320
 #define DISPLAY_HEIGHT       170
 #define LCD_HOST             SPI2_HOST
 #define LCD_PIXEL_CLOCK_HZ   (40 * 1000 * 1000)
 
-// Draw buffer: full-screen in PSRAM, small DMA-capable trans buffer in SRAM.
-// This avoids the SPI DMA internal RAM allocation failures seen with large
-// SRAM draw buffers competing with audio and WiFi.
+// Draw buffer: full-screen lines in PSRAM, small DMA-capable trans buffer
+// in SRAM. Avoids SPI DMA internal RAM allocation failures.
 #define DRAW_BUF_LINES       20
 #define TRANS_BUF_LINES      2
 
@@ -108,7 +110,7 @@ static void format_time(uint32_t secs, char *buf, size_t len)
 }
 
 // ============================================================================
-// UI creation — called once after LVGL init, with lock held
+// UI creation - called once after LVGL init, with lock held
 // ============================================================================
 
 static void ui_create(void)
@@ -117,7 +119,7 @@ static void ui_create(void)
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
-    // Title — large font, top of screen, circular scroll when too long
+    // Title - large font, top of screen, circular scroll when too long
     s_label_title = lv_label_create(scr);
     lv_obj_set_width(s_label_title, DISPLAY_WIDTH - 10);
     lv_label_set_long_mode(s_label_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
@@ -126,7 +128,7 @@ static void ui_create(void)
     lv_obj_align(s_label_title, LV_ALIGN_TOP_LEFT, 5, 8);
     lv_label_set_text(s_label_title, "AirPlay Ready");
 
-    // Artist — slightly smaller, muted colour, circular scroll
+    // Artist - slightly smaller, muted colour, circular scroll
     s_label_artist = lv_label_create(scr);
     lv_obj_set_width(s_label_artist, DISPLAY_WIDTH - 10);
     lv_label_set_long_mode(s_label_artist, LV_LABEL_LONG_SCROLL_CIRCULAR);
@@ -135,7 +137,7 @@ static void ui_create(void)
     lv_obj_align(s_label_artist, LV_ALIGN_TOP_LEFT, 5, 42);
     lv_label_set_text(s_label_artist, "");
 
-    // Progress bar — thin, accent colour fill
+    // Progress bar - thin, accent colour fill
     s_bar_progress = lv_bar_create(scr);
     lv_obj_set_size(s_bar_progress, DISPLAY_WIDTH - 10, 6);
     lv_obj_align(s_bar_progress, LV_ALIGN_TOP_LEFT, 5, 118);
@@ -146,14 +148,14 @@ static void ui_create(void)
                               lv_color_make(30, 144, 255),
                               LV_PART_INDICATOR);
 
-    // Time label — bottom left, muted
+    // Time label - bottom left, muted
     s_label_time = lv_label_create(scr);
     lv_obj_set_style_text_font(s_label_time, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_label_time, lv_color_make(150, 150, 150), 0);
     lv_obj_align(s_label_time, LV_ALIGN_TOP_LEFT, 5, 140);
     lv_label_set_text(s_label_time, "");
 
-    // Status label — top right, yellow (paused indicator)
+    // Status label - top right, yellow (paused indicator)
     s_label_status = lv_label_create(scr);
     lv_obj_set_style_text_font(s_label_status, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_label_status,
@@ -163,7 +165,7 @@ static void ui_create(void)
 }
 
 // ============================================================================
-// UI update — reflects current s_display state onto LVGL widgets
+// UI update - reflects current s_display state onto LVGL widgets
 // ============================================================================
 
 static void ui_update(void)
@@ -299,7 +301,7 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
 }
 
 // ============================================================================
-// Display task — periodic UI updates (LVGL rendering handled by esp_lvgl_port)
+// Display task - periodic UI updates (LVGL rendering handled by esp_lvgl_port)
 // ============================================================================
 
 static void display_task(void *pvParameters)
@@ -374,6 +376,9 @@ void display_init(void)
         (esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io_handle));
 
     // ---- ST7789 panel -------------------------------------------------------
+    // The panel is physically 170x320 (portrait). We configure esp_lcd in
+    // portrait mode (hres=170, vres=320) and let esp_lvgl_port handle the
+    // 90-degree rotation to landscape for LVGL.
     esp_lcd_panel_handle_t panel_handle = NULL;
     esp_lcd_panel_dev_config_t panel_cfg = {
         .reset_gpio_num = CONFIG_DISPLAY_SPI_RST,
@@ -385,13 +390,7 @@ void display_init(void)
 
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
-
-    // Orientation: landscape 320x170
-    // NOTE: invert_color, mirror and gap may need tuning for your specific
-    // board revision. If the image appears offset or mirrored, adjust here.
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_handle, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, false));
     ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel_handle, 0, 35));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
 
@@ -400,20 +399,25 @@ void display_init(void)
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
 
     // ---- Add display to esp_lvgl_port ---------------------------------------
-    // Draw buffer in PSRAM, small DMA-capable trans_buffer in SRAM.
-    // This pattern avoids SPI DMA internal RAM allocation failures.
+    // Panel registered as portrait (170x320). LVGL rotation to landscape
+    // is handled by esp_lvgl_port via rotation=90 in flags.
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle     = io_handle,
         .panel_handle  = panel_handle,
         .buffer_size   = DISPLAY_WIDTH * DRAW_BUF_LINES,
         .double_buffer = true,
         .trans_size    = DISPLAY_WIDTH * TRANS_BUF_LINES,
-        .hres          = DISPLAY_WIDTH,
-        .vres          = DISPLAY_HEIGHT,
+        .hres          = DISPLAY_HEIGHT,   // portrait: 170
+        .vres          = DISPLAY_WIDTH,    // portrait: 320
         .monochrome    = false,
+        .rotation = {
+            .swap_xy  = true,
+            .mirror_x = true,
+            .mirror_y = false,
+        },
         .flags = {
             .buff_spiram = true,
-            .swap_bytes  = true,    // ST7789 needs byte-swapped RGB565
+            .swap_bytes  = true,
         },
     };
     s_lvgl_disp = lvgl_port_add_disp(&disp_cfg);
