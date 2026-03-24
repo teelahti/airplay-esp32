@@ -39,18 +39,18 @@ static const char *TAG = "display_st7789";
 // Hardware configuration
 // ============================================================================
 
-// Physical panel is 170x320 in portrait orientation.
-// We render in landscape (320x170) so LVGL width/height are swapped.
+// Landscape 320x170. Hardware rotation (swap_xy + mirror) is applied via
+// esp_lcd panel calls so LVGL sees the display as landscape natively.
+// No software rotation needed — avoids extra RAM and CPU overhead.
 #define DISPLAY_WIDTH        320
 #define DISPLAY_HEIGHT       170
 #define LCD_HOST             SPI2_HOST
 #define LCD_PIXEL_CLOCK_HZ   (40 * 1000 * 1000)
 
-// Full-frame PSRAM buffer avoids chunking artefacts during software rotation.
-// trans_size is the DMA chunk in SRAM — small to avoid internal RAM pressure.
-// max_transfer_sz must match trans_size (the actual DMA chunk), not the full buffer.
-#define DRAW_BUF_PIXELS      (DISPLAY_WIDTH * DISPLAY_HEIGHT)  // full frame in PSRAM
-#define TRANS_BUF_PIXELS     (DISPLAY_HEIGHT * 10)             // 10 portrait rows in SRAM
+// Draw buffer in PSRAM — 20 landscape rows.
+// trans_size in SRAM — small DMA chunk to minimise internal RAM pressure.
+#define DRAW_BUF_LINES       20
+#define TRANS_BUF_LINES      2
 
 // ============================================================================
 // Display state
@@ -351,15 +351,13 @@ void display_init(void)
     gpio_set_level(CONFIG_DISPLAY_BL_GPIO, 0);
 
     // ---- SPI bus ------------------------------------------------------------
-    // max_transfer_sz matches TRANS_BUF_PIXELS (the actual DMA chunk size),
-    // NOT the full PSRAM buffer — keeping internal RAM usage minimal.
     spi_bus_config_t buscfg = {
         .mosi_io_num     = CONFIG_DISPLAY_SPI_MOSI,
         .miso_io_num     = -1,
         .sclk_io_num     = CONFIG_DISPLAY_SPI_CLK,
         .quadwp_io_num   = -1,
         .quadhd_io_num   = -1,
-        .max_transfer_sz = TRANS_BUF_PIXELS * sizeof(uint16_t),
+        .max_transfer_sz = DISPLAY_WIDTH * DRAW_BUF_LINES * sizeof(uint16_t),
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
@@ -378,8 +376,8 @@ void display_init(void)
         (esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io_handle));
 
     // ---- ST7789 panel -------------------------------------------------------
-    // Panel registered in native portrait (hres=170, vres=320).
-    // esp_lvgl_port software rotation handles landscape for LVGL.
+    // Hardware rotation applied via panel calls so LVGL sees landscape natively.
+    // No software rotation needed in esp_lvgl_port.
     esp_lcd_panel_handle_t panel_handle = NULL;
     esp_lcd_panel_dev_config_t panel_cfg = {
         .reset_gpio_num = CONFIG_DISPLAY_SPI_RST,
@@ -392,6 +390,8 @@ void display_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_handle, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, false));
     ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel_handle, 0, 35));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
 
@@ -400,23 +400,17 @@ void display_init(void)
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
 
     // ---- Add display to esp_lvgl_port ---------------------------------------
-    // hres/vres = physical portrait dimensions (170x320).
-    // rotation.swap_xy + mirror_x = landscape with correct orientation.
-    // buff_spiram = full frame in PSRAM; trans_size = DMA chunk in SRAM.
+    // Register as landscape (320x170) — hardware rotation already applied.
+    // PSRAM draw buffer, small SRAM trans_buffer for DMA.
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle     = io_handle,
         .panel_handle  = panel_handle,
-        .buffer_size   = DRAW_BUF_PIXELS,
+        .buffer_size   = DISPLAY_WIDTH * DRAW_BUF_LINES,
         .double_buffer = true,
-        .trans_size    = TRANS_BUF_PIXELS,
-        .hres          = DISPLAY_HEIGHT,   // portrait native: 170
-        .vres          = DISPLAY_WIDTH,    // portrait native: 320
+        .trans_size    = DISPLAY_WIDTH * TRANS_BUF_LINES,
+        .hres          = DISPLAY_WIDTH,    // landscape: 320
+        .vres          = DISPLAY_HEIGHT,   // landscape: 170
         .monochrome    = false,
-        .rotation = {
-            .swap_xy  = true,
-            .mirror_x = true,
-            .mirror_y = false,
-        },
         .flags = {
             .buff_spiram = true,
             .swap_bytes  = true,
