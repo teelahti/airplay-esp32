@@ -40,17 +40,16 @@ static const char *TAG = "display_st7789";
 // ============================================================================
 
 // Physical panel is 170x320 in portrait orientation.
-// We render in landscape (320x170) so LVGL width/height are swapped
-// relative to the panel native orientation.
+// We render in landscape (320x170) so LVGL width/height are swapped.
 #define DISPLAY_WIDTH        320
 #define DISPLAY_HEIGHT       170
 #define LCD_HOST             SPI2_HOST
 #define LCD_PIXEL_CLOCK_HZ   (40 * 1000 * 1000)
 
-// Draw buffer: full-screen lines in PSRAM, small DMA-capable trans buffer
-// in SRAM. Avoids SPI DMA internal RAM allocation failures.
-#define DRAW_BUF_LINES       20
-#define TRANS_BUF_LINES      2
+// Full-frame PSRAM buffer avoids chunking artefacts during software rotation.
+// trans_size is sized on portrait width (170) for DMA transfers in SRAM.
+#define DRAW_BUF_PIXELS      (DISPLAY_WIDTH * DISPLAY_HEIGHT)  // full frame in PSRAM
+#define TRANS_BUF_PIXELS     (DISPLAY_HEIGHT * 10)             // 10 portrait rows in SRAM
 
 // ============================================================================
 // Display state
@@ -357,7 +356,7 @@ void display_init(void)
         .sclk_io_num     = CONFIG_DISPLAY_SPI_CLK,
         .quadwp_io_num   = -1,
         .quadhd_io_num   = -1,
-        .max_transfer_sz = DISPLAY_WIDTH * TRANS_BUF_LINES * sizeof(uint16_t),
+        .max_transfer_sz = DRAW_BUF_PIXELS * sizeof(uint16_t),
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
@@ -376,9 +375,8 @@ void display_init(void)
         (esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io_handle));
 
     // ---- ST7789 panel -------------------------------------------------------
-    // The panel is physically 170x320 (portrait). We configure esp_lcd in
-    // portrait mode (hres=170, vres=320) and let esp_lvgl_port handle the
-    // 90-degree rotation to landscape for LVGL.
+    // Panel registered in native portrait (hres=170, vres=320).
+    // esp_lvgl_port software rotation handles landscape for LVGL.
     esp_lcd_panel_handle_t panel_handle = NULL;
     esp_lcd_panel_dev_config_t panel_cfg = {
         .reset_gpio_num = CONFIG_DISPLAY_SPI_RST,
@@ -399,16 +397,17 @@ void display_init(void)
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
 
     // ---- Add display to esp_lvgl_port ---------------------------------------
-    // Panel registered as portrait (170x320). LVGL rotation to landscape
-    // is handled by esp_lvgl_port via rotation=90 in flags.
+    // hres/vres = physical portrait dimensions (170x320).
+    // rotation.swap_xy + mirror_x = landscape with correct orientation.
+    // buff_spiram = full frame in PSRAM; trans_size = DMA chunk in SRAM.
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle     = io_handle,
         .panel_handle  = panel_handle,
-        .buffer_size   = DISPLAY_WIDTH * DRAW_BUF_LINES,
+        .buffer_size   = DRAW_BUF_PIXELS,
         .double_buffer = true,
-        .trans_size    = DISPLAY_WIDTH * TRANS_BUF_LINES,
-        .hres          = DISPLAY_HEIGHT,   // portrait: 170
-        .vres          = DISPLAY_WIDTH,    // portrait: 320
+        .trans_size    = TRANS_BUF_PIXELS,
+        .hres          = DISPLAY_HEIGHT,   // portrait native: 170
+        .vres          = DISPLAY_WIDTH,    // portrait native: 320
         .monochrome    = false,
         .rotation = {
             .swap_xy  = true,
