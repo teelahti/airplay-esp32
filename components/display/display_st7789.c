@@ -39,16 +39,12 @@ static const char *TAG = "display_st7789";
 // Hardware configuration
 // ============================================================================
 
-// Landscape 320x170. Hardware rotation (swap_xy + mirror) is applied via
-// esp_lcd panel calls so LVGL sees the display as landscape natively.
-// No software rotation needed — avoids extra RAM and CPU overhead.
+// Landscape 320x170. Hardware rotation applied via panel calls AFTER
+// lvgl_port_add_disp to ensure esp_lvgl_port does not reset rotation state.
 #define DISPLAY_WIDTH        320
 #define DISPLAY_HEIGHT       170
 #define LCD_HOST             SPI2_HOST
 #define LCD_PIXEL_CLOCK_HZ   (40 * 1000 * 1000)
-
-// Draw buffer in PSRAM — 20 landscape rows.
-// trans_size in SRAM — small DMA chunk to minimise internal RAM pressure.
 #define DRAW_BUF_LINES       20
 #define TRANS_BUF_LINES      2
 
@@ -119,7 +115,6 @@ static void ui_create(void)
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
-    // Title - large font, top of screen, circular scroll when too long
     s_label_title = lv_label_create(scr);
     lv_obj_set_width(s_label_title, DISPLAY_WIDTH - 10);
     lv_label_set_long_mode(s_label_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
@@ -128,7 +123,6 @@ static void ui_create(void)
     lv_obj_align(s_label_title, LV_ALIGN_TOP_LEFT, 5, 8);
     lv_label_set_text(s_label_title, "AirPlay Ready");
 
-    // Artist - slightly smaller, muted colour, circular scroll
     s_label_artist = lv_label_create(scr);
     lv_obj_set_width(s_label_artist, DISPLAY_WIDTH - 10);
     lv_label_set_long_mode(s_label_artist, LV_LABEL_LONG_SCROLL_CIRCULAR);
@@ -137,35 +131,29 @@ static void ui_create(void)
     lv_obj_align(s_label_artist, LV_ALIGN_TOP_LEFT, 5, 42);
     lv_label_set_text(s_label_artist, "");
 
-    // Progress bar - thin, accent colour fill
     s_bar_progress = lv_bar_create(scr);
     lv_obj_set_size(s_bar_progress, DISPLAY_WIDTH - 10, 6);
     lv_obj_align(s_bar_progress, LV_ALIGN_TOP_LEFT, 5, 118);
     lv_bar_set_range(s_bar_progress, 0, 100);
     lv_bar_set_value(s_bar_progress, 0, LV_ANIM_OFF);
     lv_obj_set_style_bg_color(s_bar_progress, lv_color_make(60, 60, 60), 0);
-    lv_obj_set_style_bg_color(s_bar_progress,
-                              lv_color_make(30, 144, 255),
-                              LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(s_bar_progress, lv_color_make(30, 144, 255), LV_PART_INDICATOR);
 
-    // Time label - bottom left, muted
     s_label_time = lv_label_create(scr);
     lv_obj_set_style_text_font(s_label_time, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_label_time, lv_color_make(150, 150, 150), 0);
     lv_obj_align(s_label_time, LV_ALIGN_TOP_LEFT, 5, 140);
     lv_label_set_text(s_label_time, "");
 
-    // Status label - top right, yellow (paused indicator)
     s_label_status = lv_label_create(scr);
     lv_obj_set_style_text_font(s_label_status, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(s_label_status,
-                                lv_color_make(255, 200, 0), 0);
+    lv_obj_set_style_text_color(s_label_status, lv_color_make(255, 200, 0), 0);
     lv_obj_align(s_label_status, LV_ALIGN_TOP_RIGHT, -5, 8);
     lv_label_set_text(s_label_status, "");
 }
 
 // ============================================================================
-// UI update - reflects current s_display state onto LVGL widgets
+// UI update
 // ============================================================================
 
 static void ui_update(void)
@@ -201,14 +189,12 @@ static void ui_update(void)
             lv_label_set_text(s_label_status,
                 s_display.state == DISPLAY_STATE_PAUSED ? "|| PAUSED" : "");
 
-            // Progress bar
             uint32_t pos = get_estimated_position();
             if (s_display.duration_secs > 0) {
                 int pct = (int)((uint64_t)pos * 100 / s_display.duration_secs);
                 lv_bar_set_value(s_bar_progress, pct, LV_ANIM_OFF);
             }
 
-            // Time string: "m:ss / m:ss"
             if (s_display.duration_secs > 0) {
                 char pos_str[12], dur_str[12], time_buf[32];
                 format_time(pos, pos_str, sizeof(pos_str));
@@ -272,23 +258,18 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
 
         case RTSP_EVENT_METADATA:
             if (data) {
-                // Detect track change before updating title
                 bool track_changed = data->metadata.title[0] &&
                                      strcmp(data->metadata.title, s_display.title) != 0;
 
                 if (data->metadata.title[0])
-                    memcpy(s_display.title,  data->metadata.title,
-                           METADATA_STRING_MAX);
+                    memcpy(s_display.title,  data->metadata.title, METADATA_STRING_MAX);
                 if (data->metadata.artist[0])
-                    memcpy(s_display.artist, data->metadata.artist,
-                           METADATA_STRING_MAX);
+                    memcpy(s_display.artist, data->metadata.artist, METADATA_STRING_MAX);
                 if (data->metadata.album[0])
-                    memcpy(s_display.album,  data->metadata.album,
-                           METADATA_STRING_MAX);
+                    memcpy(s_display.album,  data->metadata.album, METADATA_STRING_MAX);
                 if (data->metadata.duration_secs)
                     s_display.duration_secs = data->metadata.duration_secs;
 
-                // Reset position on track change, ignore spurious zeros mid-song
                 if (track_changed || data->metadata.position_secs ||
                         s_display.position_secs == 0)
                     s_display.position_secs = data->metadata.position_secs;
@@ -301,7 +282,7 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
 }
 
 // ============================================================================
-// Display task - periodic UI updates (LVGL rendering handled by esp_lvgl_port)
+// Display task
 // ============================================================================
 
 static void display_task(void *pvParameters)
@@ -309,13 +290,11 @@ static void display_task(void *pvParameters)
     (void)pvParameters;
 
     while (1) {
-        // Apply pending state changes
         if (s_display.dirty) {
             s_display.dirty = false;
             ui_update();
         }
 
-        // Update progress every second while playing
         static TickType_t last_progress_update = 0;
         TickType_t now = xTaskGetTickCount();
         if (s_display.state == DISPLAY_STATE_PLAYING &&
@@ -376,40 +355,33 @@ void display_init(void)
         (esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io_handle));
 
     // ---- ST7789 panel -------------------------------------------------------
-    // Hardware rotation applied via panel calls so LVGL sees landscape natively.
-    // No software rotation needed in esp_lvgl_port.
     esp_lcd_panel_handle_t panel_handle = NULL;
     esp_lcd_panel_dev_config_t panel_cfg = {
         .reset_gpio_num = CONFIG_DISPLAY_SPI_RST,
         .rgb_endian     = LCD_RGB_ENDIAN_RGB,
         .bits_per_pixel = 16,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_cfg,
-                                             &panel_handle));
-
+    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_cfg, &panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_handle, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, false));
-    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel_handle, 0, 35));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
+    // NOTE: swap_xy, mirror and gap applied AFTER lvgl_port_add_disp
+    // to prevent esp_lvgl_port from resetting panel rotation state.
 
     // ---- esp_lvgl_port init -------------------------------------------------
     const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
 
     // ---- Add display to esp_lvgl_port ---------------------------------------
-    // Register as landscape (320x170) — hardware rotation already applied.
-    // PSRAM draw buffer, small SRAM trans_buffer for DMA.
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle     = io_handle,
         .panel_handle  = panel_handle,
         .buffer_size   = DISPLAY_WIDTH * DRAW_BUF_LINES,
         .double_buffer = true,
         .trans_size    = DISPLAY_WIDTH * TRANS_BUF_LINES,
-        .hres          = DISPLAY_WIDTH,    // landscape: 320
-        .vres          = DISPLAY_HEIGHT,   // landscape: 170
+        .hres          = DISPLAY_WIDTH,
+        .vres          = DISPLAY_HEIGHT,
         .monochrome    = false,
         .flags = {
             .buff_spiram = true,
@@ -418,6 +390,13 @@ void display_init(void)
     };
     s_lvgl_disp = lvgl_port_add_disp(&disp_cfg);
     assert(s_lvgl_disp != NULL);
+
+    // ---- Apply hardware rotation AFTER port init ----------------------------
+    // Applied here to prevent esp_lvgl_port from resetting rotation state
+    // during display registration.
+    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, false));
+    ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel_handle, 0, 35));
 
     // ---- Build initial UI ---------------------------------------------------
     lvgl_port_lock(0);
@@ -435,7 +414,6 @@ void display_init(void)
     rtsp_events_register(on_rtsp_event, NULL);
 
     // ---- Start display task (state updates, progress tick) ------------------
-    // Pinned to Core 0; audio runs on Core 1.
     xTaskCreatePinnedToCore(display_task, "display", 4096, NULL, 3, NULL, 0);
 
     ESP_LOGI(TAG, "ST7789 display initialized (LVGL 9 + esp_lvgl_port)");
