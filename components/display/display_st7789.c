@@ -47,7 +47,8 @@ static const char *TAG = "display_st7789";
 #define LCD_PIXEL_CLOCK_HZ   (40 * 1000 * 1000)
 
 // Full-frame PSRAM buffer avoids chunking artefacts during software rotation.
-// trans_size is sized on portrait width (170) for DMA transfers in SRAM.
+// trans_size is the DMA chunk in SRAM — small to avoid internal RAM pressure.
+// max_transfer_sz must match trans_size (the actual DMA chunk), not the full buffer.
 #define DRAW_BUF_PIXELS      (DISPLAY_WIDTH * DISPLAY_HEIGHT)  // full frame in PSRAM
 #define TRANS_BUF_PIXELS     (DISPLAY_HEIGHT * 10)             // 10 portrait rows in SRAM
 
@@ -350,13 +351,15 @@ void display_init(void)
     gpio_set_level(CONFIG_DISPLAY_BL_GPIO, 0);
 
     // ---- SPI bus ------------------------------------------------------------
+    // max_transfer_sz matches TRANS_BUF_PIXELS (the actual DMA chunk size),
+    // NOT the full PSRAM buffer — keeping internal RAM usage minimal.
     spi_bus_config_t buscfg = {
         .mosi_io_num     = CONFIG_DISPLAY_SPI_MOSI,
         .miso_io_num     = -1,
         .sclk_io_num     = CONFIG_DISPLAY_SPI_CLK,
         .quadwp_io_num   = -1,
         .quadhd_io_num   = -1,
-        .max_transfer_sz = DRAW_BUF_PIXELS * sizeof(uint16_t),
+        .max_transfer_sz = TRANS_BUF_PIXELS * sizeof(uint16_t),
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
