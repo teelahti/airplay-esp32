@@ -18,7 +18,7 @@ if(CONFIG_DISPLAY_ENABLED)
             idf::esp_lcd
             idf::driver
             idf::esp_timer
-            idf::esp_lvgl_port)
+            idf::espressif__esp_lvgl_port)
     else()
         target_sources(${COMPONENT_LIB} PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}/display.c")
