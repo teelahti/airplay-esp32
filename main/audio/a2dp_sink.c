@@ -98,8 +98,9 @@ static volatile bool s_audio_started = false;
 static volatile bool s_avrc_playing = false; /* AVRCP play state (instant) */
 static volatile bool s_i2s_task_running = false;
 static bool s_bt_discoverable = true;
-static uint8_t s_avrc_volume = 64;      /* 0-127, AVRCP absolute volume */
-static volatile bool s_vol_ntf_pending = false; /* phone registered for volume change */
+static uint8_t s_avrc_volume = 64; /* 0-127, AVRCP absolute volume */
+static volatile bool s_vol_ntf_pending =
+    false; /* phone registered for volume change */
 
 static RingbufHandle_t s_ringbuf = NULL;
 static SemaphoreHandle_t s_i2s_sem = NULL;
@@ -864,8 +865,8 @@ static void notify_volume_changed(void) {
   if (s_vol_ntf_pending) {
     esp_avrc_rn_param_t rn_param;
     rn_param.volume = s_avrc_volume;
-    esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_VOLUME_CHANGE,
-                            ESP_AVRC_RN_RSP_CHANGED, &rn_param);
+    esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_RN_RSP_CHANGED,
+                            &rn_param);
     s_vol_ntf_pending = false;
   }
 }
