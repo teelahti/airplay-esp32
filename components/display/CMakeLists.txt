@@ -13,7 +13,8 @@ idf_component_register(
 if(CONFIG_DISPLAY_ENABLED)
     if(CONFIG_DISPLAY_DRIVER_ST7789)
         target_sources(${COMPONENT_LIB} PRIVATE
-            "${CMAKE_CURRENT_SOURCE_DIR}/display_st7789.c")
+            "${CMAKE_CURRENT_SOURCE_DIR}/display_st7789.c"
+            "${CMAKE_CURRENT_SOURCE_DIR}/background.c")
         target_link_libraries(${COMPONENT_LIB} PRIVATE
             idf::esp_lcd
             idf::driver
@@ -31,5 +32,6 @@ if(CONFIG_DISPLAY_ENABLED)
     target_include_directories(${COMPONENT_LIB} PRIVATE
         "${PROJECT_DIR}/main/rtsp"
         "${PROJECT_DIR}/main"
+        "${CMAKE_CURRENT_SOURCE_DIR}"
     )
 endif()
