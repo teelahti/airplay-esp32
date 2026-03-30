@@ -13,31 +13,33 @@ CONFIG_I2S_WS_IO=13
 CONFIG_I2S_DO_IO=12
 CONFIG_I2S_GND_IO=14
 
-# Display GPIO configuration
-CONFIG_DISPLAY_ENABLED=y
-CONFIG_DISPLAY_DRIVER_ST7789=y
-CONFIG_DISPLAY_BUS_SPI=y
-CONFIG_DISPLAY_SPI_CLK=18
-CONFIG_DISPLAY_SPI_MOSI=17
-CONFIG_DISPLAY_SPI_CS=15
-CONFIG_DISPLAY_SPI_DC=16
-CONFIG_DISPLAY_SPI_RST=21
-CONFIG_DISPLAY_BL_GPIO=38
-CONFIG_DISPLAY_UPDATE_MS=500
-
-# LVGL v9 configuration (via esp_lvgl_port)
-# Note: esp_lvgl_port manages tick timer, task and mutex automatically.
-# Color swap is handled via lvgl_port_display_cfg_t flags.swap_bytes
-# so CONFIG_LV_COLOR_16_SWAP is not needed here.
-CONFIG_LV_CONF_SKIP=y
-CONFIG_LV_COLOR_DEPTH_16=y
-CONFIG_LV_MEM_SIZE_KILOBYTES=64
-CONFIG_LV_USE_FLEX=y
-CONFIG_LV_USE_LABEL=y
-CONFIG_LV_USE_BAR=y
-CONFIG_LV_USE_ARC=y
-CONFIG_LV_USE_THEME_DEFAULT=y
-CONFIG_LV_FONT_MONTSERRAT_14=y
-CONFIG_LV_FONT_MONTSERRAT_16=y
-CONFIG_LV_FONT_MONTSERRAT_20=y
-CONFIG_LV_FONT_DEFAULT_MONTSERRAT_14=y
+# ST7789 TFT display support is not enabled by default.
+# The display is optional hardware — enabling it configures specific SPI
+# GPIO pins which may conflict with other peripherals on your board.
+# To enable, add the following to your own sdkconfig.defaults.esp32s3
+# or run: idf.py menuconfig -> Display Configuration
+#
+# CONFIG_DISPLAY_ENABLED=y
+# CONFIG_DISPLAY_DRIVER_ST7789=y
+# CONFIG_DISPLAY_BUS_SPI=y
+# CONFIG_DISPLAY_SPI_CLK=18
+# CONFIG_DISPLAY_SPI_MOSI=17
+# CONFIG_DISPLAY_SPI_CS=15
+# CONFIG_DISPLAY_SPI_DC=16
+# CONFIG_DISPLAY_SPI_RST=21
+# CONFIG_DISPLAY_BL_GPIO=38
+# CONFIG_DISPLAY_UPDATE_MS=500
+#
+# LVGL configuration (required when display is enabled):
+# CONFIG_LV_CONF_SKIP=y
+# CONFIG_LV_COLOR_DEPTH_16=y
+# CONFIG_LV_MEM_SIZE_KILOBYTES=64
+# CONFIG_LV_USE_LABEL=y
+# CONFIG_LV_USE_BAR=y
+# CONFIG_LV_USE_THEME_DEFAULT=y
+# CONFIG_LV_FONT_MONTSERRAT_14=y
+# CONFIG_LV_FONT_MONTSERRAT_16=y
+# CONFIG_LV_FONT_MONTSERRAT_24=y
+# CONFIG_LV_FONT_DEFAULT_MONTSERRAT_14=y
+#
+# See components/display/README.md for full setup instructions.
