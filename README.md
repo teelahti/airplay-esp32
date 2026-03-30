@@ -1,4 +1,4 @@
-<div align="center">
+
 <img src="docs/logo_airplay_esp32.png" alt="AirPlay ESP32" width="400">
 
 # ESP32 AirPlay 2 Receiver
