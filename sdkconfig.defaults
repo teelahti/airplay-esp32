@@ -47,7 +47,6 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_HTTPD_WS_SUPPORT=y
 
 # Memory Tweaks
-CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
 # Push allocations > 1024 bytes to SPIRAM, keeping internal DRAM free for
 # semaphores, DMA descriptors and WiFi management structures that *must*
 # live in internal DRAM.  Default is 16384 — far too aggressive
