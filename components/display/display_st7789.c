@@ -44,30 +44,10 @@ static const char *TAG = "display_st7789";
 // Hardware configuration
 // ============================================================================
 
-// Landscape 320x170. Hardware rotation (swap_xy + mirror_x) is applied via
-// esp_lcd panel calls AFTER lvgl_port_add_disp().
-//
-// Important: esp_lvgl_port internally calls panel operations during
-// lvgl_port_add_disp() that reset the ST7789 MADCTL register (which controls
-// pixel addressing direction), wiping any rotation set before that call.
-// Applying swap_xy/mirror/set_gap after lvgl_port_add_disp() ensures the
-// correct landscape orientation is preserved. This is an ST7789 + esp_lvgl_port
-// interaction and applies regardless of ESP32 variant.
 #define DISPLAY_WIDTH        320
 #define DISPLAY_HEIGHT       170
 #define LCD_HOST             SPI2_HOST
 #define LCD_PIXEL_CLOCK_HZ   (40 * 1000 * 1000)
-
-// Draw buffer configuration:
-// esp_lvgl_port_disp.c passes the draw buffer pointer directly to
-// esp_lcd_panel_draw_bitmap — there is no intermediate copy via trans_size.
-// The buffer MUST therefore be in DMA-capable internal SRAM (buff_dma=true),
-// NOT in PSRAM. If it were in PSRAM, the SPI master would try to allocate a
-// private DMA buffer at runtime from internal heap, which fails under memory
-// pressure and causes a flush deadlock + watchdog.
-//
-// Cost: 2 (double buffer) * DRAW_BUF_LINES * 320 * 2 bytes of internal SRAM.
-// At 10 lines: 12,800 bytes. Acceptable on S3 N16R8.
 #define DRAW_BUF_LINES       10
 
 // Background image path on SPIFFS
@@ -75,14 +55,7 @@ static const char *TAG = "display_st7789";
 #define BG_EXPECTED_SIZE     (DISPLAY_WIDTH * DISPLAY_HEIGHT * 2)  // RGB565
 
 // ============================================================================
-// Layout constants — adjust these to tune position and spacing.
-// X_MARGIN / X_MARGIN_R inset widgets from the rounded border of the
-// background image. Increase if text clips into the border area.
-//
-// Vertical spacing rationale (font heights approximate):
-//   Title   Y=10,  Montserrat 24 (~28px tall) → bottom ≈ 38px
-//   Artist  Y=44,  Montserrat 16 (~19px tall) → ~6px gap above, bottom ≈ 63px
-//   Album   Y=69,  Montserrat 14 (~17px tall) → ~6px gap above, bottom ≈ 86px
+// Layout constants
 // ============================================================================
 #define X_MARGIN      22
 #define X_MARGIN_R   -22
@@ -121,8 +94,6 @@ static struct {
 
 static lv_display_t  *s_lvgl_disp  = NULL;
 
-// Background image — loaded from SPIFFS into PSRAM at init.
-// Buffer remains allocated for the lifetime of the display.
 static uint8_t          *s_bg_buf   = NULL;
 static lv_image_dsc_t    s_bg_dsc;
 
@@ -138,12 +109,6 @@ static lv_obj_t *s_label_time_remaining = NULL;
 // Background loading
 // ============================================================================
 
-/**
- * Load background image from SPIFFS into a PSRAM buffer.
- * Populates s_bg_buf and s_bg_dsc. Returns true if successful.
- * If the file is absent or wrong size, returns false — display continues
- * with a blank background.
- */
 static bool bg_load_from_spiffs(void)
 {
     FILE *f = fopen(BG_SPIFFS_PATH, "rb");
@@ -164,7 +129,6 @@ static bool bg_load_from_spiffs(void)
         return false;
     }
 
-    // Allocate from PSRAM — 106KB is too large for internal SRAM
     s_bg_buf = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
     if (!s_bg_buf) {
         ESP_LOGE(TAG, "Failed to allocate %ld bytes in PSRAM for background", size);
@@ -182,7 +146,6 @@ static bool bg_load_from_spiffs(void)
 
     fclose(f);
 
-    // Build LVGL image descriptor pointing at the PSRAM buffer
     memset(&s_bg_dsc, 0, sizeof(s_bg_dsc));
     s_bg_dsc.header.cf        = LV_COLOR_FORMAT_RGB565;
     s_bg_dsc.header.magic     = LV_IMAGE_HEADER_MAGIC;
@@ -231,6 +194,12 @@ static void ui_create(void)
 {
     lv_obj_t *scr = lv_screen_active();
 
+    // Always set a solid black background — ensures a clean screen whether or
+    // not a background image was loaded from SPIFFS. Without this, LVGL's
+    // default theme leaves the screen white with unrendered display RAM noise.
+    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+
     // Background image — loaded from SPIFFS at display_init() time.
     // If no file was found, s_bg_buf is NULL and we skip the image widget,
     // leaving the screen black. All other widgets render normally on top.
@@ -259,7 +228,6 @@ static void ui_create(void)
     lv_label_set_text(s_label_artist, "");
 
     // Album — small font, dimmer grey, scrolling
-    // Width leaves room on the right for the paused indicator
     s_label_album = lv_label_create(scr);
     lv_obj_set_width(s_label_album, DISPLAY_WIDTH - (X_MARGIN * 2) - 60);
     lv_label_set_long_mode(s_label_album, LV_LABEL_LONG_SCROLL_CIRCULAR);
@@ -295,7 +263,7 @@ static void ui_create(void)
     lv_obj_align(s_label_time_elapsed, LV_ALIGN_TOP_LEFT, X_MARGIN, Y_TIME);
     lv_label_set_text(s_label_time_elapsed, "");
 
-    // Remaining time — below bar, right aligned, with leading minus sign
+    // Remaining time — below bar, right aligned
     s_label_time_remaining = lv_label_create(scr);
     lv_obj_set_style_text_font(s_label_time_remaining, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_label_time_remaining, lv_color_make(150, 150, 150), 0);
@@ -483,7 +451,6 @@ void display_init(void)
              CONFIG_DISPLAY_SPI_CS,   CONFIG_DISPLAY_SPI_DC,
              CONFIG_DISPLAY_SPI_RST,  CONFIG_DISPLAY_BL_GPIO);
 
-    // ---- Backlight OFF during init ----------------------------------------
     gpio_config_t bl_cfg = {
         .pin_bit_mask = BIT64(CONFIG_DISPLAY_BL_GPIO),
         .mode         = GPIO_MODE_OUTPUT,
@@ -491,12 +458,8 @@ void display_init(void)
     ESP_ERROR_CHECK(gpio_config(&bl_cfg));
     gpio_set_level(CONFIG_DISPLAY_BL_GPIO, 0);
 
-    // ---- Load background from SPIFFS ----------------------------------------
-    // spiffs_storage_init() must be called before display_init() — main.c
-    // already ensures this ordering.
     bg_load_from_spiffs();
 
-    // ---- SPI bus ------------------------------------------------------------
     spi_bus_config_t buscfg = {
         .mosi_io_num     = CONFIG_DISPLAY_SPI_MOSI,
         .miso_io_num     = -1,
@@ -507,7 +470,6 @@ void display_init(void)
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
-    // ---- LCD panel IO (SPI) -------------------------------------------------
     esp_lcd_panel_io_handle_t io_handle = NULL;
     esp_lcd_panel_io_spi_config_t io_cfg = {
         .dc_gpio_num       = CONFIG_DISPLAY_SPI_DC,
@@ -521,7 +483,6 @@ void display_init(void)
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(
         (esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io_handle));
 
-    // ---- ST7789 panel -------------------------------------------------------
     esp_lcd_panel_handle_t panel_handle = NULL;
     esp_lcd_panel_dev_config_t panel_cfg = {
         .reset_gpio_num = CONFIG_DISPLAY_SPI_RST,
@@ -533,32 +494,22 @@ void display_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_handle, true));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
-    // NOTE: swap_xy, mirror and set_gap applied AFTER lvgl_port_add_disp.
-    // See comment at top of file for explanation.
 
-    // ---- esp_lvgl_port init -------------------------------------------------
-    // Pin the LVGL task to Core 0 (same as our display task).
-    // The default task_affinity = -1 (no affinity) allows the LVGL task to
-    // migrate to Core 1, where it interferes with the audio playback task
-    // (priority 7). Pinning to Core 0 keeps Core 1 clean for audio.
+    // Pin the LVGL task to Core 0. Default task_affinity=-1 allows migration
+    // to Core 1 where it interferes with the audio task (priority 7).
     const lvgl_port_cfg_t lvgl_cfg = {
         .task_priority     = 4,
         .task_stack        = 6144,
-        .task_affinity     = 0,   // Core 0 — keep Core 1 free for audio
+        .task_affinity     = 0,
         .task_max_sleep_ms = 500,
         .timer_period_ms   = 5,
     };
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
 
-    // ---- Add display to esp_lvgl_port ---------------------------------------
-    // buff_dma=true, buff_spiram=false: draw buffers allocated in internal
-    // DMA-capable SRAM. This is required because esp_lvgl_port passes the
-    // draw buffer pointer directly to esp_lcd_panel_draw_bitmap — there is no
-    // intermediate copy via trans_size in this version of the port. If the
-    // buffer were in PSRAM, the SPI master would need to allocate a private
-    // DMA buffer from internal heap at runtime, which fails under memory
-    // pressure and causes a flush deadlock and watchdog.
-    // Cost: 2 * DRAW_BUF_LINES * 320 * 2 = 12,800 bytes of internal SRAM.
+    // buff_dma=true, buff_spiram=false: draw buffers in DMA-capable internal
+    // SRAM. esp_lvgl_port passes the buffer pointer directly to
+    // esp_lcd_panel_draw_bitmap — PSRAM buffers cause SPI master to allocate
+    // a private DMA buffer at runtime, which fails under memory pressure.
     const lvgl_port_display_cfg_t disp_cfg = {
         .io_handle     = io_handle,
         .panel_handle  = panel_handle,
@@ -577,30 +528,24 @@ void display_init(void)
     s_lvgl_disp = lvgl_port_add_disp(&disp_cfg);
     assert(s_lvgl_disp != NULL);
 
-    // ---- Apply hardware rotation AFTER lvgl_port_add_disp ------------------
-    // See comment at top of file for explanation.
+    // Rotation MUST be applied after lvgl_port_add_disp() — the port resets
+    // the ST7789 MADCTL register during display registration.
     ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, true));
     ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, false));
     ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel_handle, 0, 35));
 
-    // ---- Build initial UI ---------------------------------------------------
     lvgl_port_lock(0);
     ui_create();
     lvgl_port_unlock();
 
-    // ---- Backlight ON -------------------------------------------------------
     gpio_set_level(CONFIG_DISPLAY_BL_GPIO, 1);
 
-    // ---- Init state ---------------------------------------------------------
     s_display.state = DISPLAY_STATE_STANDBY;
     s_display.dirty = true;
 
-    // ---- Register for RTSP events -------------------------------------------
     rtsp_events_register(on_rtsp_event, NULL);
 
-    // ---- Start display task (state updates, progress tick) ------------------
-    // Pinned to Core 0; audio runs on Core 1. Both the LVGL port task above
-    // and this task are on Core 0, keeping Core 1 entirely free for audio.
+    // Pinned to Core 0 — audio runs on Core 1
     xTaskCreatePinnedToCore(display_task, "display", 4096, NULL, 3, NULL, 0);
 
     ESP_LOGI(TAG, "ST7789 display initialized (LVGL 9 + esp_lvgl_port)");
