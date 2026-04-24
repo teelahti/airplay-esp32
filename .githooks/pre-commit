@@ -26,7 +26,12 @@ if [ -z "$CLANG_FORMAT" ]; then
 fi
 
 # ── Collect staged C/H files ────────────────────────────────────────
-STAGED=$(git diff --cached --name-only --diff-filter=ACMR -- '*.c' '*.h')
+# Exclude vendored/third-party paths. The local clang-format (22+) drifts
+# from CI's clang-format (18) on alignment in components/u8g2-hal-esp-idf/;
+# auto-reformatting there causes CI format-check failures.
+STAGED=$(git diff --cached --name-only --diff-filter=ACMR -- '*.c' '*.h' \
+  | { grep -v '^components/u8g2-hal-esp-idf/' || true; } \
+  | { grep -v '^components/u8g2/' || true; })
 if [ -z "$STAGED" ]; then
   exit 0
 fi
