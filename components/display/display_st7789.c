@@ -33,6 +33,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "lvgl.h"
 
 #include <stdio.h>
@@ -84,9 +85,18 @@ static struct {
     uint32_t duration_secs;
     uint32_t position_secs;
     display_state_t state;
-    bool dirty;
-    int64_t sync_time_us;
+    volatile bool dirty;    // written by RTSP callback, polled by display_task
+    int64_t sync_time_us;   // 64-bit — torn reads would cause position jumps
 } s_display;
+
+// Protects s_display against concurrent access from the RTSP event callback
+// thread and the display_task. Must be held around any multi-field read or
+// write (strings, sync_time_us, state+position together). Dirty is volatile
+// so the polling loop picks up the flag without holding the mutex.
+static SemaphoreHandle_t s_state_mutex = NULL;
+
+#define STATE_LOCK()   xSemaphoreTake(s_state_mutex, portMAX_DELAY)
+#define STATE_UNLOCK() xSemaphoreGive(s_state_mutex)
 
 // ============================================================================
 // LVGL handles and widgets
@@ -277,12 +287,41 @@ static void ui_create(void)
 
 static void ui_update(void)
 {
+    // Snapshot shared state under s_state_mutex. This avoids torn reads of
+    // sync_time_us (int64, two-word on Xtensa) and guarantees consistent
+    // strings vs. state. The snapshot is then rendered without the state
+    // mutex held, so the RTSP callback can't be blocked by LVGL rendering.
+    char     title[METADATA_STRING_MAX];
+    char     artist[METADATA_STRING_MAX];
+    char     album[METADATA_STRING_MAX];
+    uint32_t duration_secs;
+    uint32_t position_secs;
+    int64_t  sync_time_us;
+    display_state_t state;
+
+    STATE_LOCK();
+    memcpy(title,  s_display.title,  sizeof(title));
+    memcpy(artist, s_display.artist, sizeof(artist));
+    memcpy(album,  s_display.album,  sizeof(album));
+    duration_secs = s_display.duration_secs;
+    position_secs = s_display.position_secs;
+    sync_time_us  = s_display.sync_time_us;
+    state         = s_display.state;
+    STATE_UNLOCK();
+
+    // Defensive NUL termination — if the RTSP producer ever fills all
+    // METADATA_STRING_MAX bytes without a terminator, lv_label_set_text
+    // would read off the end.
+    title[METADATA_STRING_MAX - 1]  = '\0';
+    artist[METADATA_STRING_MAX - 1] = '\0';
+    album[METADATA_STRING_MAX - 1]  = '\0';
+
     if (!lvgl_port_lock(100)) {
         ESP_LOGW(TAG, "ui_update: lock timeout");
         return;
     }
 
-    switch (s_display.state) {
+    switch (state) {
         case DISPLAY_STATE_STANDBY:
             lv_label_set_text(s_label_title,          "AirPlay Ready");
             lv_label_set_text(s_label_artist,          "");
@@ -305,28 +344,33 @@ static void ui_update(void)
 
         case DISPLAY_STATE_PLAYING:
         case DISPLAY_STATE_PAUSED: {
-            lv_label_set_text(s_label_title,
-                s_display.title[0]  ? s_display.title  : "---");
-            lv_label_set_text(s_label_artist,
-                s_display.artist[0] ? s_display.artist : "");
-            lv_label_set_text(s_label_album,
-                s_display.album[0]  ? s_display.album  : "");
+            lv_label_set_text(s_label_title,  title[0]  ? title  : "---");
+            lv_label_set_text(s_label_artist, artist[0] ? artist : "");
+            lv_label_set_text(s_label_album,  album[0]  ? album  : "");
             lv_label_set_text(s_label_status,
-                s_display.state == DISPLAY_STATE_PAUSED ? "|| " : "");
+                state == DISPLAY_STATE_PAUSED ? "|| " : "");
 
-            uint32_t pos = get_estimated_position();
+            uint32_t pos = position_secs;
+            if (state == DISPLAY_STATE_PLAYING && sync_time_us > 0) {
+                int64_t elapsed_us = esp_timer_get_time() - sync_time_us;
+                uint32_t elapsed_secs = (uint32_t)(elapsed_us / 1000000);
+                pos += elapsed_secs;
+                if (duration_secs > 0 && pos > duration_secs) {
+                    pos = duration_secs;
+                }
+            }
 
-            if (s_display.duration_secs > 0) {
-                int pct = (int)((uint64_t)pos * 100 / s_display.duration_secs);
+            if (duration_secs > 0) {
+                int pct = (int)((uint64_t)pos * 100 / duration_secs);
                 lv_bar_set_value(s_bar_progress, pct, LV_ANIM_OFF);
 
                 char elapsed_str[12];
                 format_time(pos, elapsed_str, sizeof(elapsed_str));
                 lv_label_set_text(s_label_time_elapsed, elapsed_str);
 
-                uint32_t remaining = (pos <= s_display.duration_secs)
-                                     ? s_display.duration_secs - pos : 0;
-                char remaining_str[14];
+                uint32_t remaining = (pos <= duration_secs)
+                                     ? duration_secs - pos : 0;
+                char remaining_str[16];
                 format_remaining(remaining, remaining_str, sizeof(remaining_str));
                 lv_label_set_text(s_label_time_remaining, remaining_str);
             } else {
@@ -349,6 +393,11 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
                           void *user_data)
 {
     (void)user_data;
+
+    // All mutations of s_display happen under the state mutex so reads in
+    // display_task see a consistent snapshot. The callback runs in the RTSP
+    // event thread (not an ISR), so blocking on a FreeRTOS mutex is safe.
+    STATE_LOCK();
 
     switch (event) {
         case RTSP_EVENT_CLIENT_CONNECTED:
@@ -391,12 +440,18 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
                 bool track_changed = data->metadata.title[0] &&
                                      strcmp(data->metadata.title, s_display.title) != 0;
 
-                if (data->metadata.title[0])
+                if (data->metadata.title[0]) {
                     memcpy(s_display.title,  data->metadata.title, METADATA_STRING_MAX);
-                if (data->metadata.artist[0])
+                    s_display.title[METADATA_STRING_MAX - 1] = '\0';
+                }
+                if (data->metadata.artist[0]) {
                     memcpy(s_display.artist, data->metadata.artist, METADATA_STRING_MAX);
-                if (data->metadata.album[0])
+                    s_display.artist[METADATA_STRING_MAX - 1] = '\0';
+                }
+                if (data->metadata.album[0]) {
                     memcpy(s_display.album,  data->metadata.album, METADATA_STRING_MAX);
+                    s_display.album[METADATA_STRING_MAX - 1] = '\0';
+                }
                 if (data->metadata.duration_secs)
                     s_display.duration_secs = data->metadata.duration_secs;
 
@@ -409,6 +464,8 @@ static void on_rtsp_event(rtsp_event_t event, const rtsp_event_data_t *data,
             }
             break;
     }
+
+    STATE_UNLOCK();
 }
 
 // ============================================================================
@@ -420,14 +477,25 @@ static void display_task(void *pvParameters)
     (void)pvParameters;
 
     while (1) {
+        // Consume dirty under the state mutex so a concurrent set in the
+        // RTSP callback is never lost (clear-after-set ordering).
+        bool need_update = false;
+        display_state_t state;
+        STATE_LOCK();
         if (s_display.dirty) {
             s_display.dirty = false;
+            need_update = true;
+        }
+        state = s_display.state;
+        STATE_UNLOCK();
+
+        if (need_update) {
             ui_update();
         }
 
         static TickType_t last_progress_update = 0;
         TickType_t now = xTaskGetTickCount();
-        if (s_display.state == DISPLAY_STATE_PLAYING &&
+        if (state == DISPLAY_STATE_PLAYING &&
             (now - last_progress_update) >= pdMS_TO_TICKS(1000)) {
             last_progress_update = now;
             ui_update();
@@ -443,6 +511,9 @@ static void display_task(void *pvParameters)
 
 void display_init(void)
 {
+    s_state_mutex = xSemaphoreCreateMutex();
+    assert(s_state_mutex != NULL);
+
     ESP_LOGI(TAG,
              "Initializing ST7789 (%dx%d landscape) "
              "CLK=%d MOSI=%d CS=%d DC=%d RST=%d BL=%d",
@@ -451,12 +522,18 @@ void display_init(void)
              CONFIG_DISPLAY_SPI_CS,   CONFIG_DISPLAY_SPI_DC,
              CONFIG_DISPLAY_SPI_RST,  CONFIG_DISPLAY_BL_GPIO);
 
-    gpio_config_t bl_cfg = {
-        .pin_bit_mask = BIT64(CONFIG_DISPLAY_BL_GPIO),
-        .mode         = GPIO_MODE_OUTPUT,
-    };
-    ESP_ERROR_CHECK(gpio_config(&bl_cfg));
-    gpio_set_level(CONFIG_DISPLAY_BL_GPIO, 0);
+    // Backlight GPIO is optional — a value of -1 means "not wired / always on",
+    // which matches the Kconfig default. BIT64(-1) is undefined, and
+    // gpio_set_level(-1, ...) returns ESP_ERR_INVALID_ARG, so skip the config
+    // entirely when the pin is not set.
+    if (CONFIG_DISPLAY_BL_GPIO >= 0) {
+        gpio_config_t bl_cfg = {
+            .pin_bit_mask = BIT64(CONFIG_DISPLAY_BL_GPIO),
+            .mode         = GPIO_MODE_OUTPUT,
+        };
+        ESP_ERROR_CHECK(gpio_config(&bl_cfg));
+        gpio_set_level(CONFIG_DISPLAY_BL_GPIO, 0);
+    }
 
     bg_load_from_spiffs();
 
@@ -534,11 +611,22 @@ void display_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, false));
     ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel_handle, 0, 35));
 
-    lvgl_port_lock(0);
-    ui_create();
-    lvgl_port_unlock();
+    // Acquire the LVGL port mutex before touching LVGL widgets. The port task
+    // is already running at this point, so we must wait on the lock rather
+    // than pass 0 (non-waiting try). If the lock cannot be acquired within a
+    // generous timeout, init has gone wrong — abort rather than corrupt LVGL
+    // state by calling ui_create() unlocked.
+    if (lvgl_port_lock(1000)) {
+        ui_create();
+        lvgl_port_unlock();
+    } else {
+        ESP_LOGE(TAG, "Failed to acquire LVGL lock during init — UI not built");
+        abort();
+    }
 
-    gpio_set_level(CONFIG_DISPLAY_BL_GPIO, 1);
+    if (CONFIG_DISPLAY_BL_GPIO >= 0) {
+        gpio_set_level(CONFIG_DISPLAY_BL_GPIO, 1);
+    }
 
     s_display.state = DISPLAY_STATE_STANDBY;
     s_display.dirty = true;

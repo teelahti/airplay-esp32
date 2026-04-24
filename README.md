@@ -802,9 +802,8 @@ components/
 ├── dac_tas57xx/    # TI TAS57xx DAC driver (SqueezeAMP)
 ├── dac_tas58xx/    # TI TAS58xx DAC driver (Esparagus Audio Brick)
 ├── display/        # Display driver (OLED u8g2 or ST7789 LVGL 9, optional)
-│   ├── README.md       # Wiring, enabling, background image, implementation notes
-│   ├── background.c    # ST7789 background image pixel data (replaceable)
-│   └── background.h    # Declares background_img — see header for swap instructions
+│   ├── README.md           # Wiring, enabling, background image, implementation notes
+│   └── make_background.py  # Converts a PNG to raw RGB565 for /spiffs/bg/background.bin
 ├── spiffs_storage/ # SPIFFS filesystem mount
 ├── u8g2/           # u8g2 graphics library (git submodule)
 ├── u8g2-hal-esp-idf/ # ESP-IDF HAL for u8g2 (git submodule)
