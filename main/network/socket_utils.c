@@ -14,7 +14,7 @@ int socket_utils_bind_udp(uint16_t port, int recv_timeout_sec, int recvbuf_size,
                           uint16_t *bound_port) {
   int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
   if (sock < 0) {
-    ESP_LOGE(TAG, "Failed to create UDP socket");
+    ESP_LOGE(TAG, "Failed to create UDP socket: errno=%d", errno);
     return -1;
   }
 
@@ -52,7 +52,7 @@ int socket_utils_bind_tcp_listener(uint16_t port, int backlog, bool nonblocking,
                                    uint16_t *bound_port) {
   int sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (sock < 0) {
-    ESP_LOGE(TAG, "Failed to create TCP socket");
+    ESP_LOGE(TAG, "Failed to create TCP socket: errno=%d", errno);
     return -1;
   }
 

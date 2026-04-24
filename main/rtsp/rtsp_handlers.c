@@ -12,6 +12,7 @@
 
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sodium.h"
@@ -24,13 +25,16 @@
 #endif
 #include "hap.h"
 #include "ntp_clock.h"
+#include "ptp_clock.h"
 #include "plist.h"
 #include "rtsp_fairplay.h"
+#include "rtsp_rsa.h"
 #include "settings.h"
 #include "socket_utils.h"
 #include "tlv8.h"
 
 #include "rtsp_events.h"
+#include "dacp_client.h"
 
 static const char *TAG = "rtsp_handlers";
 
@@ -76,10 +80,13 @@ bool rtsp_codec_configure(int64_t type_id, audio_format_t *fmt,
 }
 
 // Event port task state
+#define EVENT_STACK_SIZE 3072
 static int event_client_socket = -1;
 static int event_listen_socket = -1;
 static TaskHandle_t event_task_handle = NULL;
 static volatile bool event_task_should_stop = false;
+static StaticTask_t s_event_tcb;
+static StackType_t s_event_stack[EVENT_STACK_SIZE / sizeof(StackType_t)];
 
 void rtsp_get_device_id(char *device_id, size_t len) {
   uint8_t mac[6];
@@ -228,12 +235,17 @@ static void event_port_task(void *pvParameters) {
 
 void rtsp_start_event_port_task(int listen_socket) {
   if (event_task_handle != NULL) {
-    return;
+    rtsp_stop_event_port_task();
   }
   event_task_should_stop = false;
   event_listen_socket = -1;
-  xTaskCreate(event_port_task, "event_port", 3072,
-              (void *)(intptr_t)listen_socket, 5, &event_task_handle);
+  event_task_handle = xTaskCreateStatic(
+      event_port_task, "event_port", EVENT_STACK_SIZE / sizeof(StackType_t),
+      (void *)(intptr_t)listen_socket, 5, s_event_stack, &s_event_tcb);
+}
+
+int rtsp_event_port_listen_socket(void) {
+  return event_listen_socket;
 }
 
 void rtsp_stop_event_port_task(void) {
@@ -258,6 +270,7 @@ void rtsp_stop_event_port_task(void) {
     vTaskDelay(pdMS_TO_TICKS(50));
     timeout--;
   }
+  // No need to free — static allocation
 }
 
 // Forward declarations of handlers
@@ -322,12 +335,60 @@ static const rtsp_method_handler_t method_handlers[] = {
     {"SETPEERSX", handle_setpeers},
     {NULL, NULL}};
 
+// Parse a named header value from raw RTSP request data (case-insensitive).
+// Returns pointer to a static buffer with the trimmed value, or NULL.
+static const char *parse_raw_header(const uint8_t *raw, size_t raw_len,
+                                    const char *name) {
+  static char value_buf[64];
+  const char *hdr = strcasestr((const char *)raw, name);
+  if (!hdr || (size_t)(hdr - (const char *)raw) >= raw_len) {
+    return NULL;
+  }
+  hdr += strlen(name);
+  // Skip optional whitespace
+  while (*hdr == ' ' || *hdr == '\t') {
+    hdr++;
+  }
+  // Copy until CR/LF
+  size_t i = 0;
+  while (i < sizeof(value_buf) - 1 && hdr[i] && hdr[i] != '\r' &&
+         hdr[i] != '\n') {
+    value_buf[i] = hdr[i];
+    i++;
+  }
+  value_buf[i] = '\0';
+  return value_buf;
+}
+
 int rtsp_dispatch(int socket, rtsp_conn_t *conn, const uint8_t *raw_request,
                   size_t raw_len) {
   rtsp_request_t req;
   if (rtsp_request_parse(raw_request, raw_len, &req) < 0) {
     ESP_LOGW(TAG, "Failed to parse RTSP request");
     return -1;
+  }
+
+  // Extract DACP headers if present (AirPlay 1 only — modern iOS AirPlay 2
+  // does not send these; it uses MRP for remote control instead).
+  // parse_raw_header uses a static buffer — copy before calling again.
+  if (conn->dacp_id[0] == '\0') {
+    const char *val = parse_raw_header(raw_request, raw_len, "DACP-ID:");
+    if (val) {
+      strlcpy(conn->dacp_id, val, sizeof(conn->dacp_id));
+      ESP_LOGI(TAG, "DACP-ID: %s (from %s)", conn->dacp_id, req.method);
+    }
+  }
+  if (conn->active_remote[0] == '\0') {
+    const char *val = parse_raw_header(raw_request, raw_len, "Active-Remote:");
+    if (val) {
+      strlcpy(conn->active_remote, val, sizeof(conn->active_remote));
+      ESP_LOGI(TAG, "Active-Remote: %s (from %s)", conn->active_remote,
+               req.method);
+    }
+  }
+  // Update DACP client session when both identifiers are available
+  if (conn->dacp_id[0] != '\0' && conn->active_remote[0] != '\0') {
+    dacp_set_session(conn->dacp_id, conn->active_remote, conn->client_ip);
   }
 
   // Find handler in dispatch table
@@ -351,13 +412,40 @@ int rtsp_dispatch(int socket, rtsp_conn_t *conn, const uint8_t *raw_request,
 static void handle_options(int socket, rtsp_conn_t *conn,
                            const rtsp_request_t *req, const uint8_t *raw,
                            size_t raw_len) {
-  (void)raw;
-  (void)raw_len;
-
   const char *public_methods =
       "Public: ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, FLUSHBUFFERED, TEARDOWN, "
       "OPTIONS, POST, GET, SET_PARAMETER, GET_PARAMETER, SETPEERS, "
       "SETRATEANCHORTIME\r\n";
+
+#ifdef CONFIG_AIRPLAY_FORCE_V1
+  // AirPlay v1: handle Apple-Challenge if present
+  const char *challenge = parse_raw_header(raw, raw_len, "Apple-Challenge:");
+  if (challenge) {
+    // Get our IP and MAC
+    esp_netif_ip_info_t ip_info;
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (netif && esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+      uint8_t mac[6];
+      esp_read_mac(mac, ESP_MAC_WIFI_STA);
+
+      char response_b64[512];
+      if (rsa_apple_challenge_response(challenge, ip_info.ip.addr, mac,
+                                       response_b64,
+                                       sizeof(response_b64)) == 0) {
+        char headers[768];
+        snprintf(headers, sizeof(headers), "%sApple-Response: %s\r\n",
+                 public_methods, response_b64);
+        rtsp_send_response(socket, conn, 200, "OK", req->cseq, headers, NULL,
+                           0);
+        return;
+      }
+    }
+    ESP_LOGW(TAG, "Failed to build Apple-Challenge response");
+  }
+#else
+  (void)raw;
+  (void)raw_len;
+#endif
 
   rtsp_send_response(socket, conn, 200, "OK", req->cseq, public_methods, NULL,
                      0);
@@ -390,7 +478,11 @@ static void handle_get(int socket, rtsp_conn_t *conn, const rtsp_request_t *req,
     plist_dict_string(&p, "model", "AudioAccessory5,1");
     plist_dict_string(&p, "protovers", "1.1");
     plist_dict_string(&p, "srcvers", "377.40.00");
+#ifdef CONFIG_AIRPLAY_FORCE_V1
+    plist_dict_int(&p, "vv", 1);
+#else
     plist_dict_int(&p, "vv", 2);
+#endif
     plist_dict_int(&p, "statusFlags", 4);
     plist_dict_data(&p, "pk", pk, 32);
     plist_dict_string(&p, "pi", "00000000-0000-0000-0000-000000000000");
@@ -722,6 +814,76 @@ static void parse_sdp(rtsp_conn_t *conn, const char *sdp, size_t len) {
     format.max_samples_per_frame = 1024;
   }
 
+#ifdef CONFIG_AIRPLAY_FORCE_V1
+  // AirPlay v1: parse RSA-encrypted AES key and IV from SDP
+  const char *rsaaeskey = strcasestr(sdp, "rsaaeskey:");
+  const char *aesiv_str = strcasestr(sdp, "aesiv:");
+  if (rsaaeskey && aesiv_str) {
+    // Extract base64 key (may span multiple lines, concatenate until next
+    // field or end of SDP). In practice it's a single long base64 line.
+    rsaaeskey += strlen("rsaaeskey:");
+    while (*rsaaeskey == ' ' || *rsaaeskey == '\t') {
+      rsaaeskey++;
+    }
+
+    // Collect key characters (skip whitespace/newlines within base64)
+    char key_b64[512];
+    size_t ki = 0;
+    for (const char *p = rsaaeskey; *p && ki < sizeof(key_b64) - 1; p++) {
+      if (*p == '\r' || *p == '\n') {
+        // Check if next non-space char is start of a new SDP field (e.g. "a=")
+        const char *q = p + 1;
+        while (*q == '\r' || *q == '\n' || *q == ' ') {
+          q++;
+        }
+        if (*q == 'a' && *(q + 1) == '=') {
+          break;
+        }
+      } else if (*p != ' ' && *p != '\t') {
+        key_b64[ki++] = *p;
+      }
+    }
+    key_b64[ki] = '\0';
+
+    // Extract IV
+    aesiv_str += strlen("aesiv:");
+    while (*aesiv_str == ' ' || *aesiv_str == '\t') {
+      aesiv_str++;
+    }
+    char iv_b64[64];
+    size_t ii = 0;
+    for (const char *p = aesiv_str;
+         *p && *p != '\r' && *p != '\n' && ii < sizeof(iv_b64) - 1; p++) {
+      iv_b64[ii++] = *p;
+    }
+    iv_b64[ii] = '\0';
+
+    // Decrypt AES key using RSA
+    uint8_t aes_key[32];
+    size_t aes_key_len = 0;
+    if (rsa_decrypt_aes_key(key_b64, aes_key, sizeof(aes_key), &aes_key_len) ==
+            0 &&
+        aes_key_len >= 16) {
+      encrypt.type = AUDIO_ENCRYPT_AES_CBC;
+      memcpy(encrypt.key, aes_key, aes_key_len);
+      encrypt.key_len = aes_key_len;
+
+      // Decode IV
+      size_t iv_len = 0;
+      if (sodium_base642bin(encrypt.iv, sizeof(encrypt.iv), iv_b64,
+                            strlen(iv_b64), "\r\n \t", &iv_len, NULL,
+                            sodium_base64_VARIANT_ORIGINAL_NO_PADDING) != 0) {
+        sodium_base642bin(encrypt.iv, sizeof(encrypt.iv), iv_b64,
+                          strlen(iv_b64), "\r\n \t", &iv_len, NULL,
+                          sodium_base64_VARIANT_ORIGINAL);
+      }
+      ESP_LOGI(TAG,
+               "AirPlay v1: AES-CBC encryption configured (key=%zu iv=%zu)",
+               aes_key_len, iv_len);
+    }
+  }
+#endif
+
   // Update connection state
   strncpy(conn->codec, format.codec, sizeof(conn->codec) - 1);
   conn->sample_rate = format.sample_rate;
@@ -751,7 +913,6 @@ static void handle_announce(int socket, rtsp_conn_t *conn,
 static void handle_setup(int socket, rtsp_conn_t *conn,
                          const rtsp_request_t *req, const uint8_t *raw,
                          size_t raw_len) {
-  (void)raw;
   (void)raw_len;
 
   const uint8_t *body = req->body;
@@ -895,6 +1056,52 @@ static void handle_setup(int socket, rtsp_conn_t *conn,
 
   // Handle initial SETUP vs stream SETUP
   if (!request_has_streams) {
+#ifdef CONFIG_AIRPLAY_FORCE_V1
+    // AirPlay v1: SETUP has no bplist body — transport info is in the header.
+    // Check for a Transport header to distinguish from an AirPlay 2 initial
+    // SETUP (which has no streams and no Transport header).
+    if (raw && strstr((const char *)raw, "Transport:")) {
+      ESP_LOGI(TAG, "SETUP: AirPlay v1 stream setup");
+      int64_t stream_type = 96; // RTP
+      conn->stream_type = stream_type;
+
+      // Parse client's control and timing ports from Transport header
+      rtsp_parse_transport((const char *)raw, &conn->client_control_port,
+                           &conn->client_timing_port);
+      ESP_LOGI(TAG, "Client ports: control=%u timing=%u",
+               conn->client_control_port, conn->client_timing_port);
+
+      // Start NTP timing client if client has a timing port
+      if (conn->client_timing_port > 0 && conn->client_ip != 0) {
+        ntp_clock_start_client(conn->client_ip, conn->client_timing_port);
+      }
+
+      ensure_stream_ports(conn, false);
+
+      char transport_response[256];
+      snprintf(transport_response, sizeof(transport_response),
+               "Transport: RTP/AVP/UDP;unicast;mode=record;"
+               "server_port=%d;control_port=%d;timing_port=%d\r\n"
+               "Session: 1\r\n",
+               conn->data_port, conn->control_port, conn->timing_port);
+      rtsp_send_response(socket, conn, 200, "OK", req->cseq, transport_response,
+                         NULL, 0);
+
+      // Configure audio format — RAOP default is ALAC 44100/352
+      audio_format_t format = {0};
+      rtsp_codec_configure(2, &format, 44100, 352); // ct=2 is ALAC
+      audio_receiver_set_format(&format);
+      audio_receiver_set_stream_type((audio_stream_type_t)stream_type);
+
+      // Stop PTP (AirPlay 2 timing) to free socket slots for audio.
+      // Audio stream will be started by the subsequent RECORD command.
+      ptp_clock_stop();
+
+      conn->stream_active = true;
+      return;
+    }
+#endif // CONFIG_AIRPLAY_FORCE_V1
+
     ESP_LOGI(TAG, "SETUP: Initial connection setup (no streams)");
 
     if (is_bplist) {
@@ -1024,6 +1231,10 @@ static void handle_record(int socket, rtsp_conn_t *conn,
     // Fresh start or post-teardown reconnect: full stream restart.
     audio_receiver_start_stream(conn->data_port, conn->control_port,
                                 conn->buffered_port);
+    if (conn->client_control_port > 0 && conn->client_ip != 0) {
+      audio_receiver_set_client_control(conn->client_ip,
+                                        conn->client_control_port);
+    }
     audio_receiver_set_playing(true);
   }
   conn->stream_paused = false;
@@ -1324,6 +1535,7 @@ static void handle_flush(int socket, rtsp_conn_t *conn,
   (void)raw_len;
 
   // Plain AirPlay 1 FLUSH — always immediate.
+  ESP_LOGI(TAG, "FLUSH received");
   audio_receiver_seek_flush();
   audio_output_flush();
   rtsp_send_ok(socket, conn, req->cseq);
@@ -1403,6 +1615,8 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
 
   // TEARDOWN with streams = stream teardown (may be followed by new SETUP)
   // TEARDOWN without streams = full session teardown (disconnect)
+  ESP_LOGI(TAG, "TEARDOWN: has_streams=%d stream_count=%zu", has_streams,
+           stream_count);
   audio_receiver_stop();
   audio_output_flush();
   conn->stream_active = false;
@@ -1410,8 +1624,15 @@ static void handle_teardown(int socket, rtsp_conn_t *conn,
       has_streams; // Keep session ready if only streams torn down
 
   if (!has_streams) {
-    rtsp_events_emit(RTSP_EVENT_DISCONNECTED, NULL);
-    // Full teardown - stop NTP timing
+    // Full teardown — server cleanup will emit RTSP_EVENT_DISCONNECTED
+    // when the TCP connection closes.
+#ifndef CONFIG_AIRPLAY_FORCE_V1
+    // In v1 mode, keep DACP session alive so the grace period can
+    // probe mDNS to differentiate pause from real disconnect.
+    dacp_clear_session();
+#endif
+    conn->dacp_id[0] = '\0';
+    conn->active_remote[0] = '\0';
     ntp_clock_stop();
     conn->timing_port = 0;
   }
@@ -1501,10 +1722,14 @@ static void handle_setpeers(int socket, rtsp_conn_t *conn,
     ESP_LOGI(TAG, "SETPEERS: got bplist");
   }
 
-  // Reset audio timing anchor when PTP peers change
-  // The PTP clock master may change, invalidating the current anchor
-  ESP_LOGI(TAG, "SETPEERS: Resetting timing anchor (PTP peers changed)");
-  audio_receiver_reset_timing();
+  // PTP peers changed — the PTP clock will re-lock to the new master on
+  // its own.  Do NOT reset the audio timing anchor here: the anchor's
+  // network_time_ns is in absolute PTP time, and compute_early_us
+  // auto-corrects via ptp_clock_get_offset_ns() as PTP re-locks.
+  // Resetting mid-stream orphans the pre-buffer (up to ~23 s of audio)
+  // with no valid anchor, causing consecutive-early detection to
+  // invalidate the anchor and break playback.
+  ESP_LOGI(TAG, "SETPEERS: PTP peers changed, clock will re-lock");
 
   rtsp_send_ok(socket, conn, req->cseq);
 }

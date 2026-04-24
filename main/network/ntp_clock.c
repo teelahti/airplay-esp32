@@ -33,6 +33,11 @@ typedef struct __attribute__((packed)) {
 #define MIN_MEASUREMENTS    3
 #define TIMING_INTERVAL_MS  3000 // Send request every 3 seconds
 
+#define NTP_STACK_SIZE 3072
+
+static StaticTask_t s_ntp_tcb;
+static StackType_t s_ntp_stack[NTP_STACK_SIZE / sizeof(StackType_t)];
+
 // Timing state
 static struct {
   bool running;
@@ -158,16 +163,17 @@ static void send_timing_request(void) {
   req.type = TIMING_REQUEST;
   req.seqno = htons(7); // Fixed sequence number (like shairport-sync)
 
-  // Set origin to our current time (will be echoed back in response)
+  // Set transmit field to our current time — the AirPlay source echoes
+  // request bytes 24-31 (transmit) into response bytes 8-15 (origin).
   int64_t now_us = esp_timer_get_time();
   uint64_t ntp_time = local_us_to_ntp(now_us);
 
   // Split into network byte order (avoid unaligned access)
-  uint8_t *origin_bytes = (uint8_t *)&req.origin;
+  uint8_t *tx_bytes = (uint8_t *)&req.transmit;
   uint32_t secs = htonl((uint32_t)(ntp_time >> 32));
   uint32_t frac = htonl((uint32_t)(ntp_time & 0xFFFFFFFF));
-  memcpy(origin_bytes, &secs, 4);
-  memcpy(origin_bytes + 4, &frac, 4);
+  memcpy(tx_bytes, &secs, 4);
+  memcpy(tx_bytes + 4, &frac, 4);
 
   sendto(ntp.socket, &req, sizeof(req), 0, (struct sockaddr *)&ntp.remote_addr,
          sizeof(ntp.remote_addr));
@@ -257,9 +263,10 @@ esp_err_t ntp_clock_start_client(uint32_t remote_ip, uint16_t remote_port) {
   memset(ntp.dispersions, 0, sizeof(ntp.dispersions));
   ntp.running = true;
 
-  BaseType_t ret =
-      xTaskCreate(ntp_task, "ntp_clock", 3072, NULL, 5, &ntp.task_handle);
-  if (ret != pdPASS) {
+  ntp.task_handle = xTaskCreateStatic(ntp_task, "ntp_clock",
+                                      NTP_STACK_SIZE / sizeof(StackType_t),
+                                      NULL, 5, s_ntp_stack, &s_ntp_tcb);
+  if (ntp.task_handle == NULL) {
     ESP_LOGE(TAG, "Failed to create NTP task");
     close(ntp.socket);
     ntp.socket = -1;

@@ -21,12 +21,12 @@ static const char *TAG = "settings";
 #define MAX_WIFI_PASSWORD_LEN 64
 #define MAX_DEVICE_NAME_LEN   64
 
-// Cached values
-static float g_volume_db = 0.0f;
+// Cached values  (defaults = 50 %)
+static float g_volume_db = -15.0f;
 static bool g_volume_loaded = false;
 
 #ifdef CONFIG_BT_A2DP_ENABLE
-static uint8_t g_bt_volume = 127; /* default: max */
+static uint8_t g_bt_volume = 64; /* default: 50 % */
 static bool g_bt_volume_loaded = false;
 #endif
 
@@ -81,6 +81,16 @@ esp_err_t settings_set_volume(float volume_db) {
 
   dac_set_volume(volume_db);
 
+  g_volume_db = volume_db;
+  g_volume_loaded = true;
+  return ESP_OK;
+}
+
+esp_err_t settings_persist_volume(void) {
+  if (!g_volume_loaded) {
+    return ESP_OK;
+  }
+
   nvs_handle_t nvs;
   esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
   if (err != ESP_OK) {
@@ -88,8 +98,7 @@ esp_err_t settings_set_volume(float volume_db) {
     return err;
   }
 
-  // Store as fixed-point (x100) for 2 decimal precision
-  int32_t vol_fixed = (int32_t)(volume_db * 100.0f);
+  int32_t vol_fixed = (int32_t)(g_volume_db * 100.0f);
   err = nvs_set_i32(nvs, NVS_KEY_VOLUME, vol_fixed);
   if (err == ESP_OK) {
     err = nvs_commit(nvs);
@@ -98,11 +107,9 @@ esp_err_t settings_set_volume(float volume_db) {
   nvs_close(nvs);
 
   if (err == ESP_OK) {
-    g_volume_db = volume_db;
-    g_volume_loaded = true;
-    ESP_LOGI(TAG, "Saved volume: %.2f dB", volume_db);
+    ESP_LOGI(TAG, "Persisted volume: %.2f dB", g_volume_db);
   } else {
-    ESP_LOGE(TAG, "Failed to save volume: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "Failed to persist volume: %s", esp_err_to_name(err));
   }
 
   return err;
@@ -135,6 +142,16 @@ esp_err_t settings_set_bt_volume(uint8_t volume) {
     return ESP_OK;
   }
 
+  g_bt_volume = volume;
+  g_bt_volume_loaded = true;
+  return ESP_OK;
+}
+
+esp_err_t settings_persist_bt_volume(void) {
+  if (!g_bt_volume_loaded) {
+    return ESP_OK;
+  }
+
   nvs_handle_t nvs;
   esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
   if (err != ESP_OK) {
@@ -142,18 +159,16 @@ esp_err_t settings_set_bt_volume(uint8_t volume) {
     return err;
   }
 
-  err = nvs_set_u8(nvs, NVS_KEY_BT_VOLUME, volume);
+  err = nvs_set_u8(nvs, NVS_KEY_BT_VOLUME, g_bt_volume);
   if (err == ESP_OK) {
     err = nvs_commit(nvs);
   }
   nvs_close(nvs);
 
   if (err == ESP_OK) {
-    g_bt_volume = volume;
-    g_bt_volume_loaded = true;
-    ESP_LOGI(TAG, "Saved BT volume: %d/127", volume);
+    ESP_LOGI(TAG, "Persisted BT volume: %d/127", g_bt_volume);
   } else {
-    ESP_LOGE(TAG, "Failed to save BT volume: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "Failed to persist BT volume: %s", esp_err_to_name(err));
   }
   return err;
 }

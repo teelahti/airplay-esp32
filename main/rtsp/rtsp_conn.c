@@ -28,8 +28,9 @@ rtsp_conn_t *rtsp_conn_create(void) {
       conn->volume_q15 = (int32_t)(normalized * normalized * 32768.0f);
     }
   } else {
-    conn->volume_q15 = 32768; // Full volume
-    conn->volume_db = 0.0f;
+    conn->volume_db = -15.0f; // Half volume (midpoint of -30..0 dB range)
+    float normalized = (conn->volume_db + 30.0f) / 30.0f;
+    conn->volume_q15 = (int32_t)(normalized * normalized * 32768.0f);
   }
 
   conn->data_socket = -1;
@@ -43,6 +44,9 @@ void rtsp_conn_free(rtsp_conn_t *conn) {
   if (!conn) {
     return;
   }
+
+  // Persist volume at disconnect
+  settings_persist_volume();
 
   // Cleanup any resources
   rtsp_conn_cleanup(conn);
@@ -74,8 +78,9 @@ void rtsp_conn_cleanup(rtsp_conn_t *conn) {
     return;
   }
 
-  // Stop audio receiver
-  audio_receiver_stop();
+  // Note: audio_receiver_stop() is NOT called here — it is a global operation
+  // and must be managed by the caller (rtsp_server cleanup / handle_teardown)
+  // to avoid killing a new session's audio during client replacement.
 
   // Close sockets
   if (conn->data_socket >= 0) {
@@ -127,7 +132,7 @@ void rtsp_conn_set_volume(rtsp_conn_t *conn, float volume_db) {
     conn->volume_q15 = (int32_t)(curved * 32768.0f);
   }
 
-  // Persist to NVS
+  // Update cached volume + DAC (NVS persisted at disconnect)
   settings_set_volume(volume_db);
 }
 

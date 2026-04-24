@@ -10,12 +10,14 @@ set( SRC_FILES
     "audio/audio_buffer.c"
     "audio/audio_timing.c"
     "audio/audio_crypto.c"
+    "audio/audio_resample.c"
     "rtsp/rtsp_server.c"
     "rtsp/rtsp_conn.c"
     "rtsp/rtsp_message.c"
     "rtsp/rtsp_handlers.c"
     "rtsp/rtsp_fairplay.c"
     "rtsp/rtsp_crypto.c"
+    "rtsp/rtsp_rsa.c"
     "rtsp/rtsp_events.c"
     "plist/plist_xml.c"
     "plist/bplist_parser.c"
@@ -35,9 +37,12 @@ set( SRC_FILES
     "network/web_server.c"
     "network/ota.c"
     "network/dns_server.c"
+    "network/log_stream.c"
     "led.c"
     "audio/eq_events.c"
-    "audio/audio_resample.c"
+    "buttons.c"
+    "playback_control.c"
+    "dacp_client.c"
 )
 
 # Select audio output implementation at compile time
@@ -78,6 +83,7 @@ set( DEPS
     esp_driver_i2s
     esp_timer
     esp_http_server
+    esp_http_client
     app_update
     json
     mbedtls
@@ -88,6 +94,7 @@ set( DEPS
     display
     audio-resampler
     esp_eth
+    spiffs_storage
 )
 
 # TODO: why these fall over in CI and fine locally...

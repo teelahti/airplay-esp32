@@ -314,4 +314,72 @@ menu "Airplay ESP Configuration"
                     How often the display redraws in milliseconds.
         endif
     endmenu
+
+    menu "AirPlay Protocol"
+        config AIRPLAY_FORCE_V1
+            bool "Force AirPlay v1 (classic) protocol"
+            default n
+            help
+                Force the receiver to advertise as an AirPlay v1 (classic)
+                device only. This disables AirPlay 2 features (HomeKit
+                pairing, encrypted transport) but enables DACP remote
+                control — iOS sends DACP-ID and Active-Remote headers in
+                AirPlay v1 mode, allowing hardware buttons to control
+                playback on the source device.
+
+                When disabled (default), the receiver advertises as an
+                AirPlay 2 device. Modern iOS uses the MRP (Media Remote
+                Protocol) for remote control in AirPlay 2 mode, which
+                is not implemented, so hardware play/pause falls back
+                to local mute.
+
+                Note: AirPlay v1 does not support RSA key exchange for
+                audio encryption in this codebase. The receiver will
+                advertise et=0 (no encryption). If iOS refuses to connect,
+                audio encryption support may need to be added.
+    endmenu
+
+    menu "Button Configuration"
+        config BTN_PLAY_PAUSE_GPIO
+            int "Play/Pause button GPIO (-1 to disable)"
+            default -1
+            range -1 48
+            help
+                GPIO pin for the play/pause button (active-low, internal pull-up).
+                Set to -1 to disable.
+
+        config BTN_VOLUME_UP_GPIO
+            int "Volume Up button GPIO (-1 to disable)"
+            default -1
+            range -1 48
+            help
+                GPIO pin for the volume up button (active-low, internal pull-up).
+                Supports long-press auto-repeat.
+                Set to -1 to disable.
+
+        config BTN_VOLUME_DOWN_GPIO
+            int "Volume Down button GPIO (-1 to disable)"
+            default -1
+            range -1 48
+            help
+                GPIO pin for the volume down button (active-low, internal pull-up).
+                Supports long-press auto-repeat.
+                Set to -1 to disable.
+
+        config BTN_NEXT_GPIO
+            int "Next Track button GPIO (-1 to disable)"
+            default -1
+            range -1 48
+            help
+                GPIO pin for the next track button (active-low, internal pull-up).
+                Set to -1 to disable.
+
+        config BTN_PREV_GPIO
+            int "Previous Track button GPIO (-1 to disable)"
+            default -1
+            range -1 48
+            help
+                GPIO pin for the previous track button (active-low, internal pull-up).
+                Set to -1 to disable.
+    endmenu
 endmenu

@@ -152,7 +152,7 @@ cd airplay-esp32
 # 3. Activate ESP-IDF environment
 source /path/to/esp-idf/export.sh
 
-# 4. Build and flash
+# 4. Build and flash incl. SPIFFS "storage" partition from data/
 idf.py set-target esp32s3
 idf.py build
 idf.py -p /dev/ttyUSB0 flash
@@ -160,6 +160,59 @@ idf.py -p /dev/ttyUSB0 flash
 # 5. (Optional) Monitor serial output
 idf.py -p /dev/ttyUSB0 monitor
 ```
+
+---
+
+## Custom Board Configuration
+
+If you're porting to your own hardware, you can create a **`user_platformio.ini`** file to define a custom build environment without modifying the main `platformio.ini`. This file is already included via `extra_configs` in the main config, so PlatformIO picks it up automatically.
+
+### How It Works
+
+1. Pick an existing environment to extend (e.g. `esp32s3`, `esp32wrover-dev`)
+2. Create a `sdkconfig.user.<your_board>` file with your board-specific Kconfig overrides (GPIO pins, DAC selection, display settings, etc.)
+3. Add an environment in `user_platformio.ini` that chains your sdkconfig file after the base defaults
+
+### Example
+
+Say you have a custom ESP32 board called "myboard" with a SqueezeAMP-compatible DAC but different GPIO assignments and an OLED display. Create two files:
+
+**`sdkconfig.user.myboard`** — your board-specific overrides:
+
+```ini
+# I2S pin assignments
+CONFIG_I2S_BCK_PIN=5
+CONFIG_I2S_WS_PIN=18
+CONFIG_I2S_DO_PIN=19
+
+# Enable OLED display
+CONFIG_DISPLAY_ENABLED=y
+CONFIG_DISPLAY_I2C_SDA=21
+CONFIG_DISPLAY_I2C_SCL=22
+```
+
+**`user_platformio.ini`** — your build environment:
+
+```ini
+[env:myboard]
+extends = env:esp32s3
+...
+board_build.cmake_extra_args =
+    "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig.user.myboard"
+```
+
+Then build and flash:
+
+```bash
+pio run -e myboard -t upload
+```
+
+### Notes
+
+- The sdkconfig defaults are applied **left to right** — later files override earlier ones, so your `sdkconfig.user.*` should come last
+- `sdkconfig.user.*` files are gitignored (via the `sdkconfig.*` pattern), so they won't pollute the repo
+- If you change any sdkconfig defaults, delete the cached `sdkconfig.<env>` file before rebuilding so the new values are picked up
+- You can extend any base environment — use `squeezeamp` / `squeezeamp-bt` for TAS57xx boards, `esparagus-audio-brick` / `esparagus-audio-brick-bt` for TAS58xx boards, or `esp32s3` for S3-based boards
 
 ---
 
@@ -189,6 +242,94 @@ Once the device is connected to your WiFi, you can update the firmware wirelessl
 
 ---
 
+## SPIFFS Filesystem
+
+The firmware uses a **SPIFFS partition** on flash to store web pages and DAC configuration files. This means you can update web UI pages and hybrid flow DSP programs without recompiling the firmware.
+
+### Partition Layout
+
+A `storage` partition is added to the partition table:
+
+| Board | Partition Size | Address |
+|---|---|---|
+| SqueezeAMP (8+MB) | 316 KB | 0x5B1000 |
+| SqueezeAMP 4M | 192 KB | 0x3D1000 |
+
+The SPIFFS partition is mounted at `/spiffs` on boot.
+
+### Data Directory
+
+The `data/` directory in the project root contains the files that get flashed to the SPIFFS partition:
+
+```
+data/
+├── www/               # Web interface pages
+│   ├── index.html     # Main setup / control panel
+│   ├── logs.html      # Live log viewer
+│   └── eq.html        # Equalizer page (Esparagus Audio Brick)
+└── hf/                # Hybrid flow DSP programs (SqueezeAMP)
+    └── tas57xx_fw.bin # Provide this file for hybrid flow support on TAS575xM DACs
+```
+
+### Flashing the SPIFFS Image
+
+**First time (serial only):** The partition table changes, so the first flash after upgrading must be done over serial — OTA won't work because the old partition layout doesn't include the storage partition.
+
+```bash
+# PlatformIO: flash firmware first, then the SPIFFS image from data/
+pio run -e squeezeamp-bt -t upload
+pio run -e squeezeamp-bt -t uploadfs
+
+# ESP-IDF: flash firmware + partition table + SPIFFS image in one step
+idf.py -p /dev/ttyUSB0 flash
+```
+
+**Subsequent updates:** After the partition table is in place, you can update individual files over WiFi using the file management API (see below), or re-flash the full SPIFFS image over serial.
+
+### OTA File Management API
+
+Three HTTP endpoints let you manage SPIFFS files over WiFi without reflashing:
+
+**Upload a file:**
+```bash
+curl -X POST "http://<device-ip>/api/fs/upload?path=/spiffs/hf/my_flow.bin" \
+     --data-binary @my_flow.bin
+```
+
+**Delete a file:**
+```bash
+curl -X POST "http://<device-ip>/api/fs/delete?path=/spiffs/hf/old_flow.bin"
+```
+
+**List files in a directory:**
+```bash
+curl "http://<device-ip>/api/fs/list?dir=/spiffs/hf"
+```
+
+Paths are restricted to `/spiffs/` and directory traversal (`..`) is rejected. Maximum upload size is 64 KB.
+
+### Hybrid Flow Configuration (SqueezeAMP)
+
+The TAS575xM DAC supports **hybrid flow** DSP programs that run on the chip's miniDSP core. At boot, the driver checks for `/spiffs/hf/tas57xx_fw.bin` and loads it automatically if present. No menuconfig setting is needed — just place the file and reboot.
+
+**To add or update a hybrid flow:**
+
+1. Export a `.cfg` file from TI PurePath Console
+2. Convert to binary: `python3 components/dac_tas57xx/hybridflows/convert_cfg.py --bin my_flow.cfg`
+3. Rename the output to `tas57xx_fw.bin`
+4. Copy to `data/hf/` (for serial flash) or upload via the API:
+   ```bash
+   curl -X POST "http://<device-ip>/api/fs/upload?path=/spiffs/hf/tas57xx_fw.bin" \
+        --data-binary @tas57xx_fw.bin
+   ```
+5. Reboot the device
+
+To disable the hybrid flow, delete the file (or don't include one in the SPIFFS image).
+
+> **Note:** Hybrid flows are only available to TAS575xM chips. The driver detects the chip family at boot and skips HF loading on TAS578x devices.
+
+---
+
 ## SqueezeAMP
 
 The **[SqueezeAMP](https://github.com/philippe44/SqueezeAMP)** is an ESP32-based board with a TAS5756 DAC and built-in Class-D amplifier. No external DAC needed — just connect speakers directly.
@@ -204,6 +345,8 @@ idf.py set-target esp32
 idf.py build
 idf.py -p /dev/ttyUSB0 flash
 ```
+
+`idf.py flash` also writes the SPIFFS `storage` partition populated from `data/`, so the captive-portal pages are available after first boot.
 
 The SqueezeAMP build selects the TAS57xx DAC driver automatically via Kconfig (`CONFIG_DAC_TAS57XX`) and configures the correct I2S/I2C pins. Buffer sizes are automatically reduced (2500 frames vs 5000) to fit the ESP32's more limited PSRAM access.
 
@@ -419,6 +562,93 @@ SPI mode exposes additional GPIO settings for CLK, MOSI, CS, DC, and RST.
 
 ---
 
+## Hardware Buttons (Optional)
+
+You can wire physical buttons to control playback directly from the device — no phone needed. Buttons work with both AirPlay and Bluetooth sources.
+
+### AirPlay v1 Requirement
+
+Button-driven remote control (play/pause, next/prev track) relies on **DACP** (Digital Audio Control Protocol) — a protocol where iOS sends a session ID and port that the receiver uses to send commands back to the source. **iOS only sends DACP headers in AirPlay v1 (classic) mode.** In AirPlay 2 mode, Apple uses MRP (Media Remote Protocol) instead, which is not implemented.
+
+This means:
+
+- **AirPlay 2 (default):** Volume buttons work (applied locally on the DAC), but play/pause and track skip **fall back to local mute** — they can't control the source device
+- **AirPlay v1 (forced):** All buttons work fully — volume, play/pause, next/prev all control the source device via DACP
+- **Bluetooth:** All buttons work fully via AVRCP passthrough regardless of AirPlay mode
+
+To enable full button control over AirPlay, force AirPlay v1 mode:
+
+```bash
+idf.py menuconfig
+# Navigate to: AirPlay Receiver → AirPlay Protocol
+# Enable "Force AirPlay v1 (classic) protocol"
+```
+
+Or add to your sdkconfig defaults:
+
+```
+CONFIG_AIRPLAY_FORCE_V1=y
+```
+
+> **Trade-off:** AirPlay v1 disables AirPlay 2 features (HomeKit pairing, encrypted transport, multi-room sync). The device still appears in AirPlay menus on iOS but as a classic receiver. Bluetooth is unaffected.
+
+### Supported Actions
+
+| Button       | Action                                        |
+| ------------ | --------------------------------------------- |
+| Play/Pause   | Toggle playback                               |
+| Volume Up    | Increase volume (~3 dB step, auto-repeat)     |
+| Volume Down  | Decrease volume (~3 dB step, auto-repeat)     |
+| Next Track   | Skip to next track                            |
+| Previous     | Go to previous track                          |
+
+Volume buttons support **auto-repeat**: hold for 500 ms and the action repeats every 200 ms.
+
+### How It Works
+
+- Buttons are **active-low** — wire between the GPIO and GND (no external resistor needed for most GPIOs)
+- Internal pull-ups are enabled automatically on GPIOs 0–33
+- GPIOs 34–39 (input-only on ESP32) require an **external pull-up resistor** — the driver warns at boot if these are used
+- Interrupt-driven with 50 ms software debounce — no polling overhead
+- Actions are dispatched to the active source: DACP commands for AirPlay 1, AVRCP passthrough for Bluetooth
+
+### Wiring
+
+```
+ESP32 GPIO ──┤ ├── GND
+           (button)
+```
+
+No resistor needed — the internal pull-up keeps the pin high when the button is open.
+
+### Configuration
+
+All button GPIOs default to `-1` (disabled). To enable buttons:
+
+```bash
+idf.py menuconfig
+# Navigate to: AirPlay Receiver → Button Configuration
+# Set each GPIO pin, or leave at -1 to disable
+```
+
+Or with PlatformIO:
+
+```bash
+pio run -e <env> -t menuconfig
+```
+
+| Option                | Default | Description                  |
+| --------------------- | ------- | ---------------------------- |
+| Play/Pause button GPIO | -1     | GPIO for play/pause          |
+| Volume Up button GPIO  | -1     | GPIO for volume up (repeats) |
+| Volume Down button GPIO | -1    | GPIO for volume down (repeats) |
+| Next Track button GPIO | -1     | GPIO for next track          |
+| Previous Track button GPIO | -1 | GPIO for previous track      |
+
+> **Note:** The button driver automatically installs the shared GPIO ISR service (`board_gpio_isr_init()`) if it hasn't been set up already by the board support layer.
+
+---
+
 ## Features
 
 - **AirPlay 2 protocol** — shows up natively in Control Center and all AirPlay apps
@@ -431,6 +661,7 @@ SPI mode exposes additional GPIO settings for CLK, MOSI, CS, DC, and RST.
 - **48 kHz output** — optional sample rate conversion (44.1 kHz → 48 kHz) via ART sinc resampler for DACs and S/PDIF receivers that need it
 - **LED indicator** — visual feedback for playback status
 - **OLED display** — optional screen showing track metadata, progress bar, and playback time
+- **Hardware buttons** — optional physical buttons for play/pause, volume, and track skip with auto-repeat
 - **SqueezeAMP support** — ESP32 + TAS5756 DAC with built-in amplifier
 - **Esparagus Audio Brick support** — ESP32 + TAS5825M DAC/amp with on-chip DSP and 15-band EQ
 
@@ -545,6 +776,8 @@ MCLK is not used for PCM5102A as generates it internally. It is, however, connec
 | **DAC Abstraction** | `components/dac/`     | Abstract DAC API (Kconfig-selected)       |
 | **Board Support**   | `components/boards/`  | Per-board HAL (GPIOs, SPI bus, init)      |
 | **Display**         | `components/display/` | OLED display driver (u8g2-based)          |
+| **SPIFFS Storage**  | `components/spiffs_storage/` | SPIFFS mount and filesystem init   |
+| **Buttons**         | `main/buttons.c`       | Hardware button input with debounce       |
 
 ### Project Structure
 
@@ -562,9 +795,13 @@ components/
 ├── dac_tas57xx/    # TI TAS57xx DAC driver (SqueezeAMP)
 ├── dac_tas58xx/    # TI TAS58xx DAC driver (Esparagus Audio Brick)
 ├── display/        # OLED display driver (u8g2-based, optional)
+├── spiffs_storage/ # SPIFFS filesystem mount
 ├── u8g2/           # u8g2 graphics library (git submodule)
 ├── u8g2-hal-esp-idf/ # ESP-IDF HAL for u8g2 (git submodule)
 └── boards/         # Board support (SqueezeAMP, Esparagus Audio Brick, ESP32-S3 generic)
+data/
+├── www/            # Web interface HTML pages (served from SPIFFS)
+└── hf/             # HybridFlow binary files (loaded by TAS57xx DAC driver)
 ```
 
 ---

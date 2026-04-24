@@ -23,10 +23,16 @@ esp_err_t settings_init(void);
 esp_err_t settings_get_volume(float *volume_db);
 
 /**
- * Save volume to persistent storage
+ * Apply volume (updates cached value and DAC, does NOT write to NVS).
  * @param volume_db Volume in dB (0 = max, -30 = mute)
  */
 esp_err_t settings_set_volume(float volume_db);
+
+/**
+ * Persist the current cached volume to NVS.
+ * Call once at session disconnect rather than on every change.
+ */
+esp_err_t settings_persist_volume(void);
 
 #ifdef CONFIG_BT_A2DP_ENABLE
 /**
@@ -37,12 +43,17 @@ esp_err_t settings_set_volume(float volume_db);
 esp_err_t settings_get_bt_volume(uint8_t *volume);
 
 /**
- * Save Bluetooth volume to persistent storage (AVRC 0-127 scale).
- * Does NOT apply the volume — caller is responsible for calling
- * dac_set_volume().
+ * Update cached Bluetooth volume (does NOT write to NVS).
+ * Caller is responsible for calling dac_set_volume().
  * @param volume 0 (mute) to 127 (max)
  */
 esp_err_t settings_set_bt_volume(uint8_t volume);
+
+/**
+ * Persist the current cached BT volume to NVS.
+ * Call once at session disconnect rather than on every change.
+ */
+esp_err_t settings_persist_bt_volume(void);
 #endif
 
 /**

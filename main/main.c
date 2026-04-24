@@ -1,5 +1,8 @@
 #include "audio_output.h"
 #include "audio_receiver.h"
+#include "audio_stream.h"
+#include "buttons.h"
+#include "spiram_task.h"
 #include "display.h"
 #include "dns_server.h"
 #include "ethernet.h"
@@ -7,11 +10,14 @@
 #include "hap.h"
 #include "mdns_airplay.h"
 #include "nvs_flash.h"
+#include "playback_control.h"
 #include "ptp_clock.h"
 #include "rtsp_server.h"
 #include "settings.h"
 #include "web_server.h"
+#include "log_stream.h"
 #include "wifi.h"
+#include "spiffs_storage.h"
 
 #ifdef CONFIG_BT_A2DP_ENABLE
 #include "a2dp_sink.h"
@@ -59,6 +65,7 @@ static void start_airplay_services(void) {
   ESP_ERROR_CHECK(rtsp_server_start());
 
   s_airplay_started = true;
+  playback_control_set_source(PLAYBACK_SOURCE_AIRPLAY);
   ESP_LOGI(TAG, "AirPlay ready");
 }
 #ifdef CONFIG_BT_A2DP_ENABLE
@@ -73,6 +80,7 @@ static void stop_airplay_services(void) {
   audio_output_stop();
 
   s_airplay_started = false;
+  playback_control_set_source(PLAYBACK_SOURCE_NONE);
   ESP_LOGI(TAG, "AirPlay stopped");
 }
 #endif
@@ -142,8 +150,10 @@ static void on_bt_state_changed(bool connected) {
   if (connected) {
     ESP_LOGI(TAG, "BT connected — disabling AirPlay");
     stop_airplay_services();
+    playback_control_set_source(PLAYBACK_SOURCE_BLUETOOTH);
   } else {
     ESP_LOGI(TAG, "BT disconnected — re-enabling AirPlay");
+    playback_control_set_source(PLAYBACK_SOURCE_NONE);
     if (ethernet_is_connected() || wifi_is_connected()) {
       start_airplay_services();
     }
@@ -162,6 +172,11 @@ static void on_airplay_client_event(rtsp_event_t event,
   case RTSP_EVENT_CLIENT_CONNECTED:
     ESP_LOGI(TAG, "AirPlay client connected — disabling BT");
     bt_a2dp_sink_set_discoverable(false);
+    break;
+  case RTSP_EVENT_PAUSED:
+    // V1 grace period active — keep BT hidden so the phone reconnects
+    // to AirPlay rather than falling back to BT.
+    ESP_LOGI(TAG, "AirPlay paused — keeping BT hidden");
     break;
   case RTSP_EVENT_DISCONNECTED:
     ESP_LOGI(TAG, "AirPlay client disconnected — enabling BT");
@@ -183,15 +198,31 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(ret);
   ESP_ERROR_CHECK(settings_init());
+  spiffs_storage_init();
+  log_stream_init();
+  ESP_ERROR_CHECK(playback_control_init());
   led_init();
-  display_init();
 
-  // Initialize board-specific hardware (includes SPI bus for ethernet)
+  // Initialize board-specific hardware (includes I2C/SPI bus for display and
+  // DAC)
   ESP_LOGI(TAG, "Board: %s", iot_board_get_info());
   esp_err_t err = iot_board_init();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Board init failed: %s", esp_err_to_name(err));
   }
+
+  // Pass the board-owned bus to the display so it reuses it rather than
+  // creating a duplicate bus on the same pins.
+#if defined(CONFIG_DISPLAY_BUS_SPI)
+  display_init(iot_board_get_handle(BOARD_SPI_DISP_ID));
+#else
+  display_init(iot_board_get_handle(BOARD_I2C_DISP_ID));
+#endif
+
+  // Pre-allocate audio task stacks while internal heap is still unfragmented.
+  // WiFi/TCP/TLS allocations fragment the heap, making large contiguous
+  // allocations unreliable later.
+  ESP_ERROR_CHECK(audio_realtime_preallocate());
 
   // Try ethernet first
   bool eth_available = false;
@@ -236,7 +267,8 @@ void app_main(void) {
 
   // Start services that work on any interface
   web_server_start(80);
-  xTaskCreate(network_monitor_task, "net_mon", 4096, NULL, 5, NULL);
+  task_create_spiram(network_monitor_task, "net_mon", 4096, NULL, 5, NULL,
+                     NULL);
 
   bool connected = eth_available || wifi_is_connected();
   if (connected) {
@@ -256,6 +288,8 @@ void app_main(void) {
     }
   }
 #endif
+
+  buttons_init();
 
   while (1) {
     vTaskDelay(pdMS_TO_TICKS(10000));

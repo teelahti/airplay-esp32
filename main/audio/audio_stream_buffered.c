@@ -18,6 +18,9 @@
 #define BUFFERED_AUDIO_PACKET_SIZE 8192
 #define AUDIO_BUFFERED_STACK_SIZE  4096
 
+static StaticTask_t s_buffered_tcb;
+static StackType_t *s_buffered_stack;
+
 static const char *TAG = "audio_buf";
 
 // Read exact number of bytes, but keep waiting on timeout if paused
@@ -174,10 +177,31 @@ static esp_err_t buffered_start(audio_stream_t *stream, uint16_t port) {
   state->buffered_port = bound_port;
 
   stream->running = true;
-  BaseType_t ret =
-      xTaskCreate(buffered_audio_task, "buff_audio", AUDIO_BUFFERED_STACK_SIZE,
-                  stream, 5, &state->buffered_task_handle);
-  if (ret != pdPASS) {
+
+  // Allocate stack from SPIRAM on first use — the buffered task only does
+  // socket I/O and decryption, no SPI flash access, so SPIRAM is safe.
+  // This avoids competing with BT/WiFi/display for scarce internal DRAM.
+  if (!s_buffered_stack) {
+    s_buffered_stack = heap_caps_malloc(AUDIO_BUFFERED_STACK_SIZE,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_buffered_stack) {
+      // Fallback to any available memory
+      s_buffered_stack = malloc(AUDIO_BUFFERED_STACK_SIZE);
+    }
+    if (!s_buffered_stack) {
+      ESP_LOGE(TAG, "Failed to allocate buffered audio stack");
+      close(state->buffered_listen_socket);
+      state->buffered_listen_socket = -1;
+      stream->running = false;
+      return ESP_ERR_NO_MEM;
+    }
+  }
+
+  state->buffered_task_handle =
+      xTaskCreateStatic(buffered_audio_task, "buff_audio",
+                        AUDIO_BUFFERED_STACK_SIZE / sizeof(StackType_t), stream,
+                        5, s_buffered_stack, &s_buffered_tcb);
+  if (!state->buffered_task_handle) {
     ESP_LOGE(TAG, "Failed to create buffered audio task");
     close(state->buffered_listen_socket);
     state->buffered_listen_socket = -1;
@@ -210,6 +234,7 @@ static void buffered_stop(audio_stream_t *stream) {
     vTaskDelay(pdMS_TO_TICKS(300));
     state->buffered_task_handle = NULL;
   }
+  task_free_spiram(&state->buffered_task_mem);
 
   if (state->buffered_recv_buffer) {
     heap_caps_free(state->buffered_recv_buffer);

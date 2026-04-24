@@ -15,6 +15,7 @@
  */
 
 #include "a2dp_sink.h"
+#include "spiram_task.h"
 
 #include "audio_output.h"
 #include "dac.h"
@@ -94,9 +95,12 @@ typedef enum {
 static bt_a2dp_state_cb_t s_state_cb = NULL;
 static volatile bool s_connected = false;
 static volatile bool s_audio_started = false;
+static volatile bool s_avrc_playing = false; /* AVRCP play state (instant) */
 static volatile bool s_i2s_task_running = false;
 static bool s_bt_discoverable = true;
-static uint8_t s_avrc_volume = 127; /* 0-127, AVRCP absolute volume */
+static uint8_t s_avrc_volume = 64; /* 0-127, AVRCP absolute volume */
+static volatile bool s_vol_ntf_pending =
+    false; /* phone registered for volume change */
 
 static RingbufHandle_t s_ringbuf = NULL;
 static SemaphoreHandle_t s_i2s_sem = NULL;
@@ -315,6 +319,7 @@ static void bt_a2dp_evt_handler(uint16_t event, void *param) {
       ESP_LOGI(TAG, "A2DP disconnected");
       s_connected = false;
       s_audio_started = false;
+      s_avrc_playing = false;
 
       // Stop BT playback
       i2s_task_stop();
@@ -329,8 +334,8 @@ static void bt_a2dp_evt_handler(uint16_t event, void *param) {
 
       // Discoverable state is managed by main via set_discoverable()
 
-      // Persist the last-used volume so it is restored on next connect
-      settings_set_bt_volume(s_avrc_volume);
+      // Persist the last-used volume to NVS once at disconnect
+      settings_persist_bt_volume();
     }
     break;
   }
@@ -404,19 +409,28 @@ static void bt_avrc_ct_evt_handler(uint16_t event, void *param) {
       esp_avrc_ct_send_metadata_cmd(
           0, ESP_AVRC_MD_ATTR_TITLE | ESP_AVRC_MD_ATTR_ARTIST |
                  ESP_AVRC_MD_ATTR_ALBUM | ESP_AVRC_MD_ATTR_GENRE);
-      // Register for track change notification
+      // Request current play status (duration + position + play state)
+      esp_avrc_ct_send_get_play_status_cmd(0);
+      // Register for notifications: track change, play status, position
       esp_avrc_ct_send_register_notification_cmd(1, ESP_AVRC_RN_TRACK_CHANGE,
                                                  0);
+      esp_avrc_ct_send_register_notification_cmd(
+          2, ESP_AVRC_RN_PLAY_STATUS_CHANGE, 0);
+      esp_avrc_ct_send_register_notification_cmd(3,
+                                                 ESP_AVRC_RN_PLAY_POS_CHANGED,
+                                                 10); // report every 10 seconds
     }
     break;
 
   case ESP_AVRC_CT_METADATA_RSP_EVT: {
-    // Metadata response — one attribute per event
+    // Metadata response — one attribute per event.
+    // attr_text was deep-copied in bt_avrc_ct_cb and must be freed here.
     uint8_t attr_id = rc->meta_rsp.attr_id;
     uint8_t *text = rc->meta_rsp.attr_text;
     int len = rc->meta_rsp.attr_length;
 
     if (text == NULL || len == 0) {
+      free(text);
       break;
     }
 
@@ -454,6 +468,37 @@ static void bt_avrc_ct_evt_handler(uint16_t event, void *param) {
       // Emit metadata event after each attribute update
       rtsp_events_emit(RTSP_EVENT_METADATA, &meta_data);
     }
+    free(text);
+    break;
+  }
+
+  case ESP_AVRC_CT_PLAY_STATUS_RSP_EVT: {
+    uint32_t duration_ms = rc->play_status_rsp.song_length;
+    uint32_t position_ms = rc->play_status_rsp.song_position;
+    esp_avrc_playback_stat_t status = rc->play_status_rsp.play_status;
+
+    ESP_LOGI(TAG, "Play status: state=%d pos=%lums dur=%lums", status,
+             (unsigned long)position_ms, (unsigned long)duration_ms);
+
+    // Update duration and position in metadata for display
+    // 0xFFFFFFFF means "not available" per AVRCP spec
+    if (duration_ms != 0xFFFFFFFF) {
+      meta_data.metadata.duration_secs = duration_ms / 1000;
+    }
+    if (position_ms != 0xFFFFFFFF) {
+      meta_data.metadata.position_secs = position_ms / 1000;
+    }
+    rtsp_events_emit(RTSP_EVENT_METADATA, &meta_data);
+
+    // Emit play state from AVRCP (faster than A2D audio state)
+    if (status == ESP_AVRC_PLAYBACK_PLAYING) {
+      s_avrc_playing = true;
+      rtsp_events_emit(RTSP_EVENT_PLAYING, NULL);
+    } else if (status == ESP_AVRC_PLAYBACK_PAUSED ||
+               status == ESP_AVRC_PLAYBACK_STOPPED) {
+      s_avrc_playing = false;
+      rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
+    }
     break;
   }
 
@@ -463,13 +508,43 @@ static void bt_avrc_ct_evt_handler(uint16_t event, void *param) {
       // Clear old metadata so stale fields don't persist
       memset(&meta_data, 0, sizeof(meta_data));
 
-      // Request new metadata
+      // Request new metadata and play status
       esp_avrc_ct_send_metadata_cmd(
           0, ESP_AVRC_MD_ATTR_TITLE | ESP_AVRC_MD_ATTR_ARTIST |
                  ESP_AVRC_MD_ATTR_ALBUM | ESP_AVRC_MD_ATTR_GENRE);
+      esp_avrc_ct_send_get_play_status_cmd(0);
       // Re-register for track change
       esp_avrc_ct_send_register_notification_cmd(1, ESP_AVRC_RN_TRACK_CHANGE,
                                                  0);
+    } else if (rc->change_ntf.event_id == ESP_AVRC_RN_PLAY_STATUS_CHANGE) {
+      esp_avrc_playback_stat_t status = rc->change_ntf.event_parameter.playback;
+      ESP_LOGI(TAG, "Play status changed: %d", status);
+
+      // Refresh position/duration from source
+      esp_avrc_ct_send_get_play_status_cmd(0);
+
+      if (status == ESP_AVRC_PLAYBACK_PLAYING) {
+        s_avrc_playing = true;
+        rtsp_events_emit(RTSP_EVENT_PLAYING, NULL);
+      } else if (status == ESP_AVRC_PLAYBACK_PAUSED ||
+                 status == ESP_AVRC_PLAYBACK_STOPPED) {
+        s_avrc_playing = false;
+        rtsp_events_emit(RTSP_EVENT_PAUSED, NULL);
+      }
+      // Re-register
+      esp_avrc_ct_send_register_notification_cmd(
+          2, ESP_AVRC_RN_PLAY_STATUS_CHANGE, 0);
+    } else if (rc->change_ntf.event_id == ESP_AVRC_RN_PLAY_POS_CHANGED) {
+      uint32_t pos_ms = rc->change_ntf.event_parameter.play_pos;
+      ESP_LOGD(TAG, "Play position: %lums", (unsigned long)pos_ms);
+
+      if (pos_ms != 0xFFFFFFFF) {
+        meta_data.metadata.position_secs = pos_ms / 1000;
+        rtsp_events_emit(RTSP_EVENT_METADATA, &meta_data);
+      }
+      // Re-register
+      esp_avrc_ct_send_register_notification_cmd(
+          3, ESP_AVRC_RN_PLAY_POS_CHANGED, 10);
     }
     break;
 
@@ -480,7 +555,23 @@ static void bt_avrc_ct_evt_handler(uint16_t event, void *param) {
 
 static void bt_avrc_ct_cb(esp_avrc_ct_cb_event_t event,
                           esp_avrc_ct_cb_param_t *param) {
-  bt_app_work_dispatch(bt_avrc_ct_evt_handler, (uint16_t)event, param,
+  esp_avrc_ct_cb_param_t local = *param;
+
+  // Deep-copy attr_text for metadata responses — the BT stack frees the
+  // original buffer after this callback returns, so the shallow copy done
+  // by bt_app_work_dispatch would leave a dangling pointer.
+  if (event == ESP_AVRC_CT_METADATA_RSP_EVT && param->meta_rsp.attr_text &&
+      param->meta_rsp.attr_length > 0) {
+    uint8_t *copy = malloc((size_t)param->meta_rsp.attr_length + 1);
+    if (copy) {
+      memcpy(copy, param->meta_rsp.attr_text,
+             (size_t)param->meta_rsp.attr_length);
+      copy[param->meta_rsp.attr_length] = '\0';
+      local.meta_rsp.attr_text = copy;
+    }
+  }
+
+  bt_app_work_dispatch(bt_avrc_ct_evt_handler, (uint16_t)event, &local,
                        sizeof(esp_avrc_ct_cb_param_t));
 }
 
@@ -517,6 +608,7 @@ static void bt_avrc_tg_evt_handler(uint16_t event, void *param) {
       rn_param.volume = s_avrc_volume;
       esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_VOLUME_CHANGE,
                               ESP_AVRC_RN_RSP_INTERIM, &rn_param);
+      s_vol_ntf_pending = true;
     }
     break;
 
@@ -631,7 +723,7 @@ static void bt_stack_evt_handler(uint16_t event, void *param) {
     esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
   }
 
-  // Restore saved BT volume (falls back to 127 / 0 dB if none stored)
+  // Restore saved BT volume (falls back to 64 / -15 dB if none stored)
   {
     uint8_t saved_vol;
     if (settings_get_bt_volume(&saved_vol) == ESP_OK) {
@@ -700,8 +792,9 @@ esp_err_t bt_a2dp_sink_init(const char *device_name,
     return ESP_ERR_NO_MEM;
   }
 
-  BaseType_t ret = xTaskCreate(bt_app_task, "bt_app", BT_TASK_STACK, NULL,
-                               BT_TASK_PRIO, &s_bt_task_handle);
+  BaseType_t ret =
+      task_create_spiram(bt_app_task, "bt_app", BT_TASK_STACK, NULL,
+                         BT_TASK_PRIO, &s_bt_task_handle, NULL);
   if (ret != pdPASS) {
     ESP_LOGE(TAG, "Failed to create BT app task");
     return ESP_ERR_NO_MEM;
@@ -729,4 +822,80 @@ void bt_a2dp_sink_set_discoverable(bool discoverable) {
     ESP_LOGI(TAG, "BT discoverable disabled");
     esp_bt_gap_set_scan_mode(ESP_BT_NON_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
   }
+}
+
+// ============================================================================
+// AVRCP passthrough commands for hardware button control
+// ============================================================================
+
+static void send_passthrough(uint8_t key_code) {
+  if (!s_connected) {
+    return;
+  }
+  esp_avrc_ct_send_passthrough_cmd(0, key_code, ESP_AVRC_PT_CMD_STATE_PRESSED);
+  vTaskDelay(pdMS_TO_TICKS(50));
+  esp_avrc_ct_send_passthrough_cmd(0, key_code, ESP_AVRC_PT_CMD_STATE_RELEASED);
+}
+
+void bt_a2dp_send_playpause(void) {
+  if (s_avrc_playing) {
+    send_passthrough(ESP_AVRC_PT_CMD_PAUSE);
+    ESP_LOGI(TAG, "AVRCP: pause");
+  } else {
+    send_passthrough(ESP_AVRC_PT_CMD_PLAY);
+    ESP_LOGI(TAG, "AVRCP: play");
+  }
+}
+
+void bt_a2dp_send_next(void) {
+  send_passthrough(ESP_AVRC_PT_CMD_FORWARD);
+  ESP_LOGI(TAG, "AVRCP: next");
+}
+
+void bt_a2dp_send_prev(void) {
+  send_passthrough(ESP_AVRC_PT_CMD_BACKWARD);
+  ESP_LOGI(TAG, "AVRCP: prev");
+}
+
+/**
+ * Notify the source (phone) that local volume changed via AVRCP TG.
+ * Only sends if the phone previously registered for the notification.
+ */
+static void notify_volume_changed(void) {
+  if (s_vol_ntf_pending) {
+    esp_avrc_rn_param_t rn_param;
+    rn_param.volume = s_avrc_volume;
+    esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_RN_RSP_CHANGED,
+                            &rn_param);
+    s_vol_ntf_pending = false;
+  }
+}
+
+void bt_a2dp_send_volume_up(void) {
+  // Adjust local AVRCP volume by ~10 units (≈3 dB equivalent)
+  uint8_t new_vol = s_avrc_volume;
+  if (new_vol <= 117) {
+    new_vol += 10;
+  } else {
+    new_vol = 127;
+  }
+  s_avrc_volume = new_vol;
+  float volume_db = ((float)new_vol / 127.0f) * 30.0f - 30.0f;
+  dac_set_volume(volume_db);
+  notify_volume_changed();
+  ESP_LOGI(TAG, "AVRCP: volume up -> %d/127", new_vol);
+}
+
+void bt_a2dp_send_volume_down(void) {
+  uint8_t new_vol = s_avrc_volume;
+  if (new_vol >= 10) {
+    new_vol -= 10;
+  } else {
+    new_vol = 0;
+  }
+  s_avrc_volume = new_vol;
+  float volume_db = ((float)new_vol / 127.0f) * 30.0f - 30.0f;
+  dac_set_volume(volume_db);
+  notify_volume_changed();
+  ESP_LOGI(TAG, "AVRCP: volume down -> %d/127", new_vol);
 }
