@@ -9,8 +9,8 @@ sdkconfig
 sdkconfig.*
 !sdkconfig.defaults.*
 
-#
-user_platformio.ini
+# Intentionally disable this as this repo is for my board
+# user_platformio.ini
 
 # macOS metadata
 .DS_Store
