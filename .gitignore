@@ -9,7 +9,9 @@ sdkconfig
 sdkconfig.*
 !sdkconfig.defaults.*
 
+
 # Intentionally disable this as this repo is for my board
+!sdkconfig.user.*
 # user_platformio.ini
 
 # macOS metadata
